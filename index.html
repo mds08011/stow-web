@@ -1,0 +1,1716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stow</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="description" content="BYOK voice dictation: Groq Whisper transcription with an LLM polish pass. Everything stays in this browser.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12161c" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Stow">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<style>
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #eef0f4;
+  --text: #14181d;
+  --text-dim: #5c6673;
+  --border: #d9dee6;
+  --accent: #b4530a;
+  --accent-text: #ffffff;
+  --danger: #b3261e;
+  --ok: #1f6f43;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161c;
+    --surface: #1a1f27;
+    --surface-2: #232935;
+    --text: #e7ebf0;
+    --text-dim: #9aa5b4;
+    --border: #2e3643;
+    --accent: #e2861f;
+    --accent-text: #17130c;
+    --danger: #ff8a80;
+    --ok: #6ddc9c;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior-y: none;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ── App chrome ─────────────────────────────────────────────── */
+header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: max(10px, env(safe-area-inset-top)) 14px 10px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+header h1 {
+  font-size: 17px;
+  font-weight: 650;
+  margin: 0;
+  flex: 1 1 auto;
+  letter-spacing: .2px;
+}
+header .spacer { flex: 1 1 auto; }
+
+main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px;
+  padding-bottom: 24px;
+}
+
+/* Bottom control dock — thumb reachable */
+footer {
+  flex: 0 0 auto;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.screen { display: none; }
+.screen.active { display: block; }
+body[data-screen="record"] footer { display: flex; }
+body:not([data-screen="record"]) footer { display: none; }
+
+/* ── Controls ───────────────────────────────────────────────── */
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  min-height: 44px;
+}
+button:active { opacity: .75; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+button.danger { color: var(--danger); }
+button.icon {
+  padding: 8px 10px;
+  min-height: 40px;
+  min-width: 40px;
+  background: transparent;
+  border-color: transparent;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+button.icon:hover { color: var(--text); }
+
+.record-btn {
+  width: 100%;
+  min-height: 76px;
+  border-radius: 20px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: .2px;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.record-btn[data-state="recording"] {
+  background: var(--danger);
+  color: #fff;
+}
+.record-btn[data-state="busy"] {
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: currentColor; flex: 0 0 auto;
+}
+.record-btn[data-state="recording"] .dot {
+  border-radius: 3px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none !important } }
+
+select, input[type=text], input[type=password], textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 12px;
+  width: 100%;
+  min-height: 44px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 34px;
+}
+textarea { min-height: 120px; resize: vertical; line-height: 1.45; }
+textarea.tall { min-height: 260px; }
+label.field { display: block; margin-bottom: 14px; }
+label.field > span.lbl {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.hint { font-size: 13px; color: var(--text-dim); margin: 6px 0 0; }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { flex: 1 1 auto; }
+.row > .shrink { flex: 0 0 auto; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+.card h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 40px;
+  font-weight: 300;
+  text-align: center;
+  letter-spacing: 1px;
+  margin: 8px 0 2px;
+}
+.status { text-align: center; color: var(--text-dim); font-size: 14px; min-height: 21px; }
+
+.banner {
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 14px;
+  border: 1px solid;
+}
+.banner.error { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.banner.info  { background: var(--surface-2); border-color: var(--border); color: var(--text-dim); }
+.banner .banner-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.banner .banner-actions button { flex: 1 1 auto; }
+
+/* ── Rendered markdown output ───────────────────────────────── */
+.md { font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3 {
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--accent);
+  margin: 18px 0 8px;
+}
+.md h1 { font-size: 17px; text-transform: none; letter-spacing: 0; }
+.md p { margin: 0 0 12px; }
+.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
+.md li { margin: 0 0 4px; }
+.md ul.tasks { list-style: none; padding-left: 2px; }
+.md ul.tasks li { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; }
+.md ul.tasks .box {
+  flex: 0 0 auto;
+  width: 19px; height: 19px;
+  border: 2px solid var(--text-dim);
+  border-radius: 5px;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ok);
+}
+.md code {
+  background: var(--surface-2);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em;
+}
+.md pre {
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 0 0 12px;
+}
+.md pre code { background: none; padding: 0; }
+.md blockquote {
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+.md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+.raw-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+/* ── Lists (history, presets) ───────────────────────────────── */
+.list { list-style: none; margin: 0; padding: 0; }
+.list li {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.list li:last-child { border-bottom: none; }
+.list .entry {
+  flex: 1 1 auto;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 12px 4px;
+  min-height: 56px;
+  display: block;
+  width: 100%;
+}
+.list .entry .title { display: block; font-size: 15px; margin-bottom: 3px; }
+.list .entry .meta { display: block; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.list .entry .preview {
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.empty { color: var(--text-dim); font-size: 14px; text-align: center; padding: 28px 8px; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  z-index: 50;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+}
+.toast.show { opacity: 1; }
+
+.mono-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.hidden { display: none !important; }
+</style>
+</head>
+<body data-screen="record">
+
+<header>
+  <button class="icon" id="btn-back" hidden aria-label="Back">&#8592; Back</button>
+  <h1 id="screen-title">Stow</h1>
+  <button class="icon" id="btn-history" aria-label="History">History</button>
+  <button class="icon" id="btn-settings" aria-label="Settings">Settings</button>
+</header>
+
+<main>
+
+  <!-- ── Record ──────────────────────────────────────────────── -->
+  <section class="screen active" id="screen-record">
+    <div id="banner-slot"></div>
+
+    <div class="card" id="idle-card">
+      <div class="timer" id="timer">00:00</div>
+      <div class="status" id="status">Ready</div>
+    </div>
+
+    <div class="card hidden" id="result-card">
+      <h2 id="result-heading">Polished</h2>
+      <div class="md" id="result-md"></div>
+      <pre class="raw-text hidden" id="result-raw"></pre>
+      <div class="row" style="margin-top:14px">
+        <button id="btn-copy">Copy</button>
+        <button id="btn-share">Share</button>
+        <button id="btn-toggle-raw">Raw</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Settings ────────────────────────────────────────────── -->
+  <section class="screen" id="screen-settings">
+    <div class="card">
+      <h2>Groq API key</h2>
+      <div id="key-set" class="hidden">
+        <p class="mono-key" id="key-masked"></p>
+        <div class="row" style="margin-top:10px">
+          <button id="btn-key-change">Change</button>
+          <button class="danger" id="btn-key-clear">Clear</button>
+        </div>
+      </div>
+      <div id="key-entry">
+        <input type="password" id="input-key" placeholder="gsk_..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="btn-key-save">Save key</button>
+          <button id="btn-key-cancel" hidden>Cancel</button>
+        </div>
+      </div>
+      <p class="hint">Stored in this browser's localStorage and sent only to api.groq.com. Get one at console.groq.com.</p>
+    </div>
+
+    <div class="card">
+      <h2>Jargon dictionary</h2>
+      <textarea id="input-jargon" placeholder="El Toro, P2-141, check valve, submittal" autocapitalize="off" spellcheck="false"></textarea>
+      <p class="hint">Comma-separated terms. Appended to Whisper's biasing prompt so it hears them correctly, and given to the polish model so it preserves them.</p>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btn-jargon-save">Save dictionary</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Polish presets</h2>
+      <ul class="list" id="preset-list"></ul>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-preset-new">New preset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>About</h2>
+      <p class="hint" style="margin-top:0">
+        Whisper model <code>whisper-large-v3-turbo</code>, polish model <code>llama-3.1-8b-instant</code>.
+        No analytics, no third-party requests, no service worker.
+        Recording needs the screen on and this page in the foreground.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── Preset editor ───────────────────────────────────────── -->
+  <section class="screen" id="screen-preset">
+    <div class="card">
+      <label class="field">
+        <span class="lbl">Name</span>
+        <input type="text" id="preset-name" placeholder="Preset name">
+      </label>
+      <label class="field">
+        <span class="lbl">System prompt</span>
+        <textarea class="tall" id="preset-prompt" spellcheck="false"></textarea>
+      </label>
+      <p class="hint">
+        The transcript is sent separately as the user message. The jargon dictionary is appended
+        automatically, or inserted where you put <code>{{JARGON_LIST}}</code>.
+      </p>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="btn-preset-save">Save</button>
+        <button id="btn-preset-reset" hidden>Reset to default</button>
+        <button class="danger" id="btn-preset-delete" hidden>Delete</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── History ─────────────────────────────────────────────── -->
+  <section class="screen" id="screen-history">
+    <div class="card">
+      <ul class="list" id="history-list"></ul>
+      <div id="history-empty" class="empty">No sessions yet.</div>
+    </div>
+    <div class="row">
+      <button class="danger" id="btn-history-clear">Clear all history</button>
+    </div>
+  </section>
+
+  <!-- ── History detail ──────────────────────────────────────── -->
+  <section class="screen" id="screen-entry">
+    <div class="card">
+      <h2 id="entry-heading">Polished</h2>
+      <div class="md" id="entry-md"></div>
+      <pre class="raw-text hidden" id="entry-raw"></pre>
+      <div class="row" style="margin-top:14px">
+        <button id="btn-entry-copy">Copy</button>
+        <button id="btn-entry-share">Share</button>
+        <button id="btn-entry-toggle-raw">Raw</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="danger" id="btn-entry-delete">Delete this session</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="row">
+    <select id="preset-select" aria-label="Polish preset"></select>
+  </div>
+  <button class="record-btn" id="btn-record" data-state="idle">
+    <span class="dot"></span><span id="record-label">Start recording</span>
+  </button>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ══ Constants ═══════════════════════════════════════════════
+  // Mirrors Android Stow exactly. Changing either model here means the web and
+  // Android apps stop producing comparable output for the same preset.
+  const MODELS = {
+    transcribe: 'whisper-large-v3-turbo',
+    polish: 'llama-3.1-8b-instant'
+  };
+  const TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
+  const CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+
+  /**
+   * Whisper biasing prompt base, copied verbatim from RecordingService.kt. The
+   * user's jargon dictionary is appended as ", <jargon>" — a style hint, not an
+   * instruction. Whisper only honours roughly the last 224 tokens, so a very
+   * long dictionary pushes these seed terms out of scope.
+   */
+  const BASE_ASR_PROMPT = 'CAD, HVAC, structural load, thermodynamic, schematic';
+
+  /** Optional placeholder letting a preset control where the jargon list lands. */
+  const JARGON_PLACEHOLDER = '{{JARGON_LIST}}';
+
+  const ID_CLEAN_PROSE = 'clean_prose';
+  const ID_TASK_CAPTURE = 'task_capture';
+
+  const DEFAULT_CLEAN_PROSE_NAME = 'Clean prose';
+  const DEFAULT_CLEAN_PROSE_PROMPT =
+'You are a careful transcription cleaner for professional voice notes (civil engineering, construction, project notes).\n' +
+'\n' +
+'Your job is light cleanup only. Follow these rules strictly and in order:\n' +
+'\n' +
+'1. Remove filler words and vocalizations: um, uh, er, ah, like, you know, kind of, sort of, basically, actually (when used as filler), yeah, so, well (when used as filler), and similar. Remove them completely.\n' +
+'\n' +
+'2. Fix spelling mistakes, grammar errors, and add correct capitalization and punctuation.\n' +
+'\n' +
+'3. Apply very light rephrasing only when it significantly improves readability (e.g. fixing broken word order or incomplete sentences). Keep the original meaning, structure, and the speaker’s natural voice.\n' +
+'\n' +
+'4. Do NOT add any new information, explanations, summaries, or content that was not spoken.\n' +
+'5. Do NOT expand short notes into longer text or turn them into essays.\n' +
+'6. Do NOT rewrite for style or make the language more formal/professional beyond the light fixes above.\n' +
+'7. Preserve technical terms, project names, company names, and proper nouns exactly. Use the provided Jargon List when available.\n' +
+'8. Keep the cleaned output similar in length to the original transcription.\n' +
+'\n' +
+'Output ONLY the cleaned plain text. No explanations, no quotes, no additional commentary.';
+
+  const DEFAULT_TASK_CAPTURE_NAME = 'Task capture';
+  const DEFAULT_TASK_CAPTURE_PROMPT =
+'You are polishing a dictated voice capture from a construction project\n' +
+'engineer. The capture may contain project tasks, personal tasks, general\n' +
+'notes, or any jumbled mix — often switching topics mid-stream.\n' +
+'\n' +
+'Output Markdown only. No preamble, no commentary, no code fences.\n' +
+'\n' +
+'Classify each item individually:\n' +
+'\n' +
+'1. ACTION ITEMS — anything the speaker states as something to do — become\n' +
+'   exactly one line each: "- [ ] <task>".\n' +
+'   Group them under headings in this priority:\n' +
+'   - "## <job>" when a job is named or clearly implied (e.g. 6100,\n' +
+'     P2-141, El Toro). Use the job name/number as spoken.\n' +
+'   - "## Personal" for personal errands and home tasks.\n' +
+'   - "## Unsorted" for action items with no clear home.\n' +
+'2. EVERYTHING ELSE — thoughts, observations, meeting recap, journal\n' +
+'   content — stays as cleaned-up prose or plain bullets under "## Notes",\n' +
+'   in the order spoken.\n' +
+'\n' +
+'Rules:\n' +
+'- Omit any heading that would be empty. If the capture contains no action\n' +
+'  items at all, output only the polished text: no headings, no checkboxes.\n' +
+'- One task per line, even if the speaker ran several together.\n' +
+'- Keep the speaker\'s wording. Fix obvious transcription errors from\n' +
+'  context. Never invent, merge, or expand items.\n' +
+'- If a due date or timeframe is spoken, append it in parentheses at the\n' +
+'  end of the task line, e.g. "- [ ] Order check valves (by Friday)".\n' +
+'- Preserve names, quantities, and job numbers exactly as spoken.';
+
+  const KEYS = {
+    apiKey: 'stow_groq_key',
+    jargon: 'stow_jargon',
+    presets: 'stow_presets',
+    selected: 'stow_selected_preset',
+    history: 'stow_history'
+  };
+
+  /**
+   * History budget. localStorage is a hard ~5 MB per origin in Safari and there
+   * is no way to ask how much is left, so the cap is enforced on our side:
+   * newest-first, trimmed by count first and then by serialized size.
+   */
+  const HISTORY_MAX_ITEMS = 50;
+  const HISTORY_MAX_BYTES = 400000;
+  const ENTRY_MAX_CHARS = 20000;
+
+  // ══ Tiny DOM helpers ════════════════════════════════════════
+  const el = id => document.getElementById(id);
+  const pad = n => String(n).padStart(2, '0');
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+  function fmtDuration(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s);
+  }
+
+  function fmtTimestamp(ms) {
+    const d = new Date(ms);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  let toastTimer = null;
+  function toast(msg) {
+    const t = el('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // ══ Storage ═════════════════════════════════════════════════
+  function lsGet(key) {
+    try { return localStorage.getItem(key); } catch (_) { return null; }
+  }
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, value); return true; } catch (_) { return false; }
+  }
+  function lsRemove(key) {
+    try { localStorage.removeItem(key); } catch (_) {}
+  }
+
+  function getApiKey() { return lsGet(KEYS.apiKey) || ''; }
+  function getJargon() { return lsGet(KEYS.jargon) || ''; }
+
+  // ══ Polish presets ══════════════════════════════════════════
+  function defaultPreset(id) {
+    return id === ID_TASK_CAPTURE
+      ? { id: ID_TASK_CAPTURE, name: DEFAULT_TASK_CAPTURE_NAME, prompt: DEFAULT_TASK_CAPTURE_PROMPT }
+      : { id: ID_CLEAN_PROSE, name: DEFAULT_CLEAN_PROSE_NAME, prompt: DEFAULT_CLEAN_PROSE_PROMPT };
+  }
+  const isBuiltIn = id => id === ID_CLEAN_PROSE || id === ID_TASK_CAPTURE;
+
+  /**
+   * All presets, built-ins first. Re-seeds either built-in if storage was
+   * cleared or hand-edited, so the list is never missing a default.
+   */
+  function getPresets() {
+    let stored = [];
+    try {
+      const parsed = JSON.parse(lsGet(KEYS.presets) || '[]');
+      if (Array.isArray(parsed)) {
+        stored = parsed.filter(p =>
+          p && typeof p.id === 'string' && p.id &&
+          typeof p.name === 'string' && p.name.trim() &&
+          typeof p.prompt === 'string' && p.prompt.trim()
+        ).map(p => ({ id: p.id, name: p.name, prompt: p.prompt }));
+      }
+    } catch (_) { stored = []; }
+
+    let changed = false;
+    if (!stored.some(p => p.id === ID_CLEAN_PROSE)) {
+      stored.unshift(defaultPreset(ID_CLEAN_PROSE));
+      changed = true;
+    }
+    if (!stored.some(p => p.id === ID_TASK_CAPTURE)) {
+      const at = stored.findIndex(p => p.id === ID_CLEAN_PROSE) + 1;
+      stored.splice(at, 0, defaultPreset(ID_TASK_CAPTURE));
+      changed = true;
+    }
+    if (changed) savePresets(stored);
+    return stored;
+  }
+
+  function savePresets(list) {
+    if (!lsSet(KEYS.presets, JSON.stringify(list))) {
+      toast('Could not save presets — storage full');
+    }
+  }
+
+  function getSelectedPreset() {
+    const all = getPresets();
+    const id = lsGet(KEYS.selected);
+    return all.find(p => p.id === id) ||
+      all.find(p => p.id === ID_CLEAN_PROSE) ||
+      all[0];
+  }
+
+  function setSelectedPreset(id) { lsSet(KEYS.selected, id); }
+
+  /**
+   * Builds the polish system message. Matches PolishPresets.buildSystemPrompt:
+   * placeholder wins; otherwise a jargon block is appended; nothing is appended
+   * when the dictionary is empty.
+   */
+  function buildSystemPrompt(preset, jargon) {
+    const list = (jargon || '').trim();
+    if (preset.prompt.indexOf(JARGON_PLACEHOLDER) !== -1) {
+      return preset.prompt.split(JARGON_PLACEHOLDER).join(list || '(none)');
+    }
+    if (!list) return preset.prompt;
+    return preset.prompt.replace(/\s+$/, '') +
+      '\n\nJargon List (preserve these exactly):\n' + list;
+  }
+
+  /** Whisper `prompt` param: base seed terms plus the user's dictionary. */
+  function buildAsrPrompt(jargon) {
+    const list = (jargon || '').trim();
+    return list ? BASE_ASR_PROMPT + ', ' + list : BASE_ASR_PROMPT;
+  }
+
+  // ══ History ═════════════════════════════════════════════════
+  function loadHistory() {
+    try {
+      const parsed = JSON.parse(lsGet(KEYS.history) || '[]');
+      return Array.isArray(parsed) ? parsed.filter(e => e && e.id && e.rawText) : [];
+    } catch (_) { return []; }
+  }
+
+  /**
+   * Persist newest-first, trimming until the serialized array fits the budget.
+   * A single oversized entry can still blow the budget on its own, so the loop
+   * has a floor of one entry and falls back to dropping the tail on quota errors.
+   */
+  function saveHistory(entries) {
+    let list = entries.slice(0, HISTORY_MAX_ITEMS);
+    let json = JSON.stringify(list);
+    while (json.length > HISTORY_MAX_BYTES && list.length > 1) {
+      list = list.slice(0, list.length - 1);
+      json = JSON.stringify(list);
+    }
+    if (lsSet(KEYS.history, json)) return list;
+
+    // Quota rejected even the trimmed list (other origins' data, private mode).
+    while (list.length > 1) {
+      list = list.slice(0, Math.floor(list.length / 2));
+      if (lsSet(KEYS.history, JSON.stringify(list))) {
+        toast('History trimmed to fit storage');
+        return list;
+      }
+    }
+    lsRemove(KEYS.history);
+    toast('Could not save history — storage full');
+    return [];
+  }
+
+  const clip = s => {
+    s = (s || '').trim();
+    return s.length > ENTRY_MAX_CHARS ? s.slice(0, ENTRY_MAX_CHARS) + '…' : s;
+  };
+
+  function addHistory(entry) {
+    const record = {
+      id: uid(),
+      at: entry.at || Date.now(),
+      durationSec: entry.durationSec == null ? null : Math.round(entry.durationSec),
+      preset: entry.preset || '',
+      rawText: clip(entry.rawText),
+      polishedText: entry.polishedText ? clip(entry.polishedText) : null
+    };
+    if (!record.rawText) return null;
+    saveHistory([record].concat(loadHistory()));
+    return record;
+  }
+
+  function deleteHistory(id) {
+    saveHistory(loadHistory().filter(e => e.id !== id));
+  }
+
+  // ══ Markdown ════════════════════════════════════════════════
+  // Deliberately small and escape-first: model output is untrusted text, so it
+  // is HTML-escaped before any markup is generated and no raw HTML survives.
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  const SENT = String.fromCharCode(0xE000);
+  const CODE_RE = new RegExp(SENT + '(\\d+)' + SENT, 'g');
+
+  function inlineMd(text) {
+    // U+E000 is a private-use codepoint: it survives escapeHtml untouched and
+    // will not appear in a transcript, so it is a safe placeholder delimiter.
+    let out = escapeHtml(text);
+    // Code spans first so their contents are not further transformed.
+    const codes = [];
+    out = out.replace(/`([^`]+)`/g, (m, c) => {
+      codes.push(c);
+      return SENT + (codes.length - 1) + SENT;
+    });
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    out = out.replace(/(^|[\s(])_([^_\n]+)_/g, '$1<em>$2</em>');
+    out = out.replace(CODE_RE, (m, i) => '<code>' + codes[Number(i)] + '</code>');
+    return out;
+  }
+
+  function renderMarkdown(md) {
+    const lines = String(md || '').replace(/\r\n?/g, '\n').split('\n');
+    const html = [];
+    let listType = null;   // 'ul' | 'ol' | 'tasks'
+    let para = [];
+    let inFence = false;
+    let fence = [];
+
+    function flushPara() {
+      if (!para.length) return;
+      html.push('<p>' + inlineMd(para.join(' ')) + '</p>');
+      para = [];
+    }
+    function closeList() {
+      if (!listType) return;
+      html.push(listType === 'ol' ? '</ol>' : '</ul>');
+      listType = null;
+    }
+    function openList(type) {
+      if (listType === type) return;
+      closeList();
+      html.push(type === 'ol' ? '<ol>' : (type === 'tasks' ? '<ul class="tasks">' : '<ul>'));
+      listType = type;
+    }
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\s+$/, '');
+
+      if (/^\s*```/.test(line)) {
+        if (inFence) {
+          html.push('<pre><code>' + escapeHtml(fence.join('\n')) + '</code></pre>');
+          fence = [];
+          inFence = false;
+        } else {
+          flushPara(); closeList();
+          inFence = true;
+        }
+        continue;
+      }
+      if (inFence) { fence.push(rawLine); continue; }
+
+      if (!line.trim()) { flushPara(); closeList(); continue; }
+
+      let m;
+      if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+        flushPara(); closeList();
+        const level = Math.min(3, m[1].length);
+        html.push('<h' + level + '>' + inlineMd(m[2]) + '</h' + level + '>');
+        continue;
+      }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
+        flushPara(); closeList();
+        html.push('<hr>');
+        continue;
+      }
+      if ((m = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/))) {
+        flushPara(); openList('tasks');
+        const done = m[1].toLowerCase() === 'x';
+        html.push('<li><span class="box">' + (done ? '✓' : '') + '</span>' +
+          '<span>' + inlineMd(m[2]) + '</span></li>');
+        continue;
+      }
+      if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+        flushPara(); openList('ul');
+        html.push('<li>' + inlineMd(m[1]) + '</li>');
+        continue;
+      }
+      if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+        flushPara(); openList('ol');
+        html.push('<li>' + inlineMd(m[1]) + '</li>');
+        continue;
+      }
+      if ((m = line.match(/^\s*>\s?(.*)$/))) {
+        flushPara(); closeList();
+        html.push('<blockquote>' + inlineMd(m[1]) + '</blockquote>');
+        continue;
+      }
+      if (listType) closeList();
+      para.push(line.trim());
+    }
+
+    if (inFence && fence.length) {
+      html.push('<pre><code>' + escapeHtml(fence.join('\n')) + '</code></pre>');
+    }
+    flushPara();
+    closeList();
+    return html.join('\n');
+  }
+
+  // ══ Groq API ════════════════════════════════════════════════
+  class ApiError extends Error {
+    constructor(message, status) {
+      super(message);
+      this.name = 'ApiError';
+      this.status = status || 0;
+    }
+  }
+
+  /** Turns a Groq failure into something worth reading on a phone. */
+  function humanError(e, what) {
+    if (e && e.name === 'AbortError') return what + ' cancelled.';
+    const status = e && e.status;
+    const raw = String((e && e.message) || e || '');
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.error && parsed.error.message) detail = parsed.error.message;
+    } catch (_) { /* not JSON — use as-is */ }
+    if (detail.length > 220) detail = detail.slice(0, 220) + '…';
+    // Our own synthetic messages are already full sentences; do not re-wrap them.
+    const selfDescribed = e instanceof ApiError && !status && /[.!?]$/.test(detail);
+
+    if (status === 401 || status === 403) {
+      return 'Groq rejected the API key. Check it in Settings.';
+    }
+    if (status === 413) {
+      return 'Recording is too large for Groq (25 MB limit). Record shorter takes.';
+    }
+    if (status === 429) {
+      return 'Groq rate limit hit. Wait a moment, then retry.';
+    }
+    if (status >= 500) {
+      return 'Groq had a server error (' + status + '). Your recording is kept — retry.';
+    }
+    if (!status) {
+      if (navigator.onLine === false) {
+        return 'No internet connection. Your recording is kept — retry when you are back online.';
+      }
+      if (selfDescribed) return detail;
+      return what + ' failed: ' + (detail || 'network error') + '.';
+    }
+    return what + ' failed (' + status + '): ' + detail;
+  }
+
+  const extOf = m => {
+    m = (m || '').toLowerCase();
+    if (m.indexOf('mp4') !== -1 || m.indexOf('m4a') !== -1 || m.indexOf('aac') !== -1) return 'm4a';
+    if (m.indexOf('ogg') !== -1) return 'ogg';
+    if (m.indexOf('mpeg') !== -1 || m.indexOf('mp3') !== -1) return 'mp3';
+    if (m.indexOf('wav') !== -1) return 'wav';
+    return 'webm';
+  };
+
+  /**
+   * Whisper transcription. Same request shape as Android Stow: file + model +
+   * biasing prompt, nothing else, so both apps get identical decoding defaults.
+   */
+  async function transcribe(blob, mime, apiKey, jargon) {
+    const form = new FormData();
+    form.append('file', blob, 'audio.' + extOf(mime || blob.type));
+    form.append('model', MODELS.transcribe);
+    form.append('prompt', buildAsrPrompt(jargon));
+
+    const res = await fetch(TRANSCRIBE_URL, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + apiKey },
+      body: form
+    });
+    if (!res.ok) {
+      throw new ApiError(await res.text() || res.statusText || 'Transcription failed', res.status);
+    }
+    const data = await res.json();
+    const text = (data && typeof data.text === 'string') ? data.text.trim() : '';
+    if (!text) throw new ApiError('Groq returned an empty transcript.', 0);
+    return text;
+  }
+
+  /** Polish pass. Two messages, temperature 0.2, no max_tokens — as on Android. */
+  async function polish(rawText, apiKey, systemPrompt) {
+    const res = await fetch(CHAT_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: MODELS.polish,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: rawText }
+        ]
+      })
+    });
+    if (!res.ok) {
+      throw new ApiError(await res.text() || res.statusText || 'Polish failed', res.status);
+    }
+    const data = await res.json();
+    const choice = data && data.choices && data.choices[0];
+    const content = choice && choice.message && choice.message.content;
+    const out = typeof content === 'string' ? content.trim() : '';
+    if (!out) throw new ApiError('Polish returned no content.', 0);
+    return out;
+  }
+
+  // ══ Recording ═══════════════════════════════════════════════
+  let stream = null;
+  let recorder = null;
+  let chunks = [];
+  let mimeUsed = '';
+  let wakeLock = null;
+  let timerId = null;
+  let startedAt = 0;
+
+  /**
+   * The current capture, kept alive across failures. Requirement: a failed Groq
+   * call must never cost a recording, so the blob lives here until the session
+   * is saved to history or explicitly discarded.
+   */
+  let session = null;
+
+  async function acquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+    } catch (_) { /* optional; Safari <16.4 has no wakeLock at all */ }
+  }
+  function releaseWakeLock() {
+    if (wakeLock) {
+      try { wakeLock.release(); } catch (_) {}
+      wakeLock = null;
+    }
+  }
+
+  /**
+   * First supported type wins. Safari (iOS/iPadOS) supports only audio/mp4 and
+   * falls through to it; Chrome/Firefox take webm/opus. Groq's transcription
+   * endpoint accepts m4a/mp4, webm, and ogg, so every branch is uploadable.
+   */
+  function pickMimeType() {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+    for (const t of types) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  }
+
+  function tickTimer() {
+    el('timer').textContent = fmtDuration((Date.now() - startedAt) / 1000);
+  }
+
+  function setRecordButton(state, label) {
+    const btn = el('btn-record');
+    btn.dataset.state = state;
+    btn.disabled = state === 'busy';
+    el('record-label').textContent = label;
+  }
+
+  async function startRecording() {
+    // A parked session still holds an un-transcribed recording; starting a new
+    // one throws it away, so make that an explicit choice rather than a silent
+    // side effect of tapping the big button.
+    if (session && !confirm('The previous recording has not been saved yet. Start a new one and discard it?')) {
+      return;
+    }
+    session = null;
+    clearBanner();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showBanner('error', 'This browser cannot record audio. On iPhone/iPad use Safari, and open the page over https (microphone access is blocked on file:// and plain http).');
+      return;
+    }
+    if (typeof MediaRecorder === 'undefined') {
+      showBanner('error', 'MediaRecorder is unavailable in this browser. iOS 14.3 or later is required.');
+      return;
+    }
+    if (!getApiKey()) {
+      showBanner('error', 'Set your Groq API key in Settings before recording.', [
+        { label: 'Open Settings', primary: true, onClick: () => showScreen('settings') }
+      ]);
+      return;
+    }
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const name = e && e.name;
+      let msg;
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        msg = 'Microphone access was denied. On iPad: Settings → Safari → Microphone, or tap "aA" in the address bar → Website Settings → Microphone → Allow, then try again.';
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        msg = 'No microphone was found on this device.';
+      } else if (name === 'NotReadableError') {
+        msg = 'The microphone is busy in another app. Close it and try again.';
+      } else {
+        msg = 'Microphone error: ' + ((e && e.message) || name || 'unknown');
+      }
+      showBanner('error', msg);
+      return;
+    }
+
+    await acquireWakeLock();
+
+    chunks = [];
+    mimeUsed = pickMimeType();
+    try {
+      recorder = mimeUsed ? new MediaRecorder(stream, { mimeType: mimeUsed }) : new MediaRecorder(stream);
+    } catch (e) {
+      // A browser can advertise a type and still refuse it at construction.
+      try {
+        recorder = new MediaRecorder(stream);
+      } catch (e2) {
+        stopTracks();
+        releaseWakeLock();
+        showBanner('error', 'Could not start the recorder: ' + ((e2 && e2.message) || 'unsupported audio format'));
+        return;
+      }
+    }
+    // Browsers may negotiate something other than what was requested.
+    mimeUsed = recorder.mimeType || mimeUsed || 'audio/webm';
+
+    recorder.ondataavailable = e => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onerror = () => {
+      showBanner('error', 'The recorder stopped unexpectedly. Any audio captured so far will still be sent.');
+    };
+    recorder.onstop = onRecorderStop;
+
+    startedAt = Date.now();
+    // 1 s timeslice: without it, Safari can hand back a single blob only at
+    // stop, and a mid-session tab kill would lose everything.
+    recorder.start(1000);
+
+    el('result-card').classList.add('hidden');
+    el('idle-card').classList.remove('hidden');
+    el('timer').textContent = '00:00';
+    el('status').textContent = 'Recording — keep this page open';
+    setRecordButton('recording', 'Stop');
+    clearInterval(timerId);
+    timerId = setInterval(tickTimer, 250);
+  }
+
+  function stopTracks() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }
+
+  function stopRecording() {
+    if (!recorder || recorder.state === 'inactive') return;
+    setRecordButton('busy', 'Stopping…');
+    try { recorder.stop(); } catch (_) { /* handled by onstop / fallthrough */ }
+  }
+
+  async function onRecorderStop() {
+    clearInterval(timerId);
+    timerId = null;
+    releaseWakeLock();
+    stopTracks();
+
+    const durationSec = Math.round((Date.now() - startedAt) / 1000);
+    const blob = new Blob(chunks, { type: mimeUsed });
+    chunks = [];
+    recorder = null;
+
+    if (!blob.size) {
+      setRecordButton('idle', 'Start recording');
+      el('status').textContent = 'Ready';
+      showBanner('error', 'Nothing was captured. Check that the microphone is not muted, then try again.');
+      return;
+    }
+
+    session = {
+      blob: blob,
+      mime: mimeUsed,
+      durationSec: durationSec,
+      preset: getSelectedPreset(),
+      rawText: null,
+      polishedText: null
+    };
+    runPipeline();
+  }
+
+  /**
+   * Transcribe, then polish. Either stage can be re-entered from the Retry
+   * button without re-recording — `session` holds the blob and any raw text
+   * already obtained.
+   */
+  async function runPipeline() {
+    if (!session) return;
+    clearBanner();
+    const apiKey = getApiKey();
+    const jargon = getJargon();
+
+    el('result-card').classList.add('hidden');
+    el('idle-card').classList.remove('hidden');
+    el('timer').textContent = fmtDuration(session.durationSec);
+
+    if (!session.rawText) {
+      setRecordButton('busy', 'Transcribing…');
+      el('status').textContent = 'Uploading and transcribing…';
+      try {
+        session.rawText = await transcribe(session.blob, session.mime, apiKey, jargon);
+      } catch (e) {
+        failStage(humanError(e, 'Transcription'), 'Retry transcription');
+        return;
+      }
+    }
+
+    setRecordButton('busy', 'Polishing…');
+    el('status').textContent = 'Polishing with "' + session.preset.name + '"…';
+    try {
+      session.polishedText = await polish(
+        session.rawText, apiKey, buildSystemPrompt(session.preset, jargon)
+      );
+    } catch (e) {
+      failStage(humanError(e, 'Polish'), 'Retry polish', true);
+      return;
+    }
+
+    finishSession();
+  }
+
+  /**
+   * Park the session on a failure. The audio blob stays in memory and the
+   * banner is the only way out: retry, keep the raw transcript, or discard.
+   */
+  function failStage(message, retryLabel, rawAvailable) {
+    setRecordButton('idle', 'Start recording');
+    el('status').textContent = 'Recording kept — nothing was lost';
+
+    const actions = [{ label: retryLabel, primary: true, onClick: runPipeline }];
+    if (rawAvailable && session && session.rawText) {
+      actions.push({ label: 'Keep raw transcript', onClick: finishSession });
+    }
+    actions.push({ label: 'Discard', danger: true, onClick: discardSession });
+    showBanner('error', message, actions);
+
+    if (rawAvailable && session && session.rawText) {
+      showResult(session.rawText, null);
+    }
+  }
+
+  /** Commit the session to history and release the audio blob. */
+  function finishSession() {
+    if (!session) return;
+    clearBanner();
+    addHistory({
+      at: Date.now(),
+      durationSec: session.durationSec,
+      preset: session.preset.name,
+      rawText: session.rawText,
+      polishedText: session.polishedText
+    });
+    showResult(session.rawText, session.polishedText);
+    el('status').textContent = 'Saved to history';
+    setRecordButton('idle', 'Start recording');
+    session = null;
+  }
+
+  function discardSession() {
+    session = null;
+    clearBanner();
+    el('result-card').classList.add('hidden');
+    el('idle-card').classList.remove('hidden');
+    el('timer').textContent = '00:00';
+    el('status').textContent = 'Ready';
+    setRecordButton('idle', 'Start recording');
+    toast('Recording discarded');
+  }
+
+  // ══ Result view ═════════════════════════════════════════════
+  let showingRaw = false;
+  let currentResult = { raw: '', polished: null };
+
+  function showResult(raw, polished) {
+    currentResult = { raw: raw || '', polished: polished || null };
+    showingRaw = !polished;
+    el('idle-card').classList.add('hidden');
+    el('result-card').classList.remove('hidden');
+    el('btn-toggle-raw').disabled = !polished;
+    paintResult();
+  }
+
+  function paintResult() {
+    const hasPolished = !!currentResult.polished;
+    const showRaw = showingRaw || !hasPolished;
+    el('result-heading').textContent = showRaw
+      ? (hasPolished ? 'Raw transcript' : 'Raw transcript (not polished)')
+      : 'Polished';
+    el('result-md').classList.toggle('hidden', showRaw);
+    el('result-raw').classList.toggle('hidden', !showRaw);
+    if (showRaw) {
+      el('result-raw').textContent = currentResult.raw;
+    } else {
+      el('result-md').innerHTML = renderMarkdown(currentResult.polished);
+    }
+    el('btn-toggle-raw').textContent = showRaw && hasPolished ? 'Polished' : 'Raw';
+  }
+
+  const resultText = () =>
+    (showingRaw || !currentResult.polished) ? currentResult.raw : currentResult.polished;
+
+  // ══ Clipboard / share ═══════════════════════════════════════
+  async function copyText(text) {
+    if (!text) { toast('Nothing to copy'); return; }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast('Copied');
+        return;
+      }
+    } catch (_) { /* fall through to the legacy path */ }
+    // execCommand fallback: non-secure contexts (file://, plain http) have no
+    // async clipboard API at all.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    document.body.removeChild(ta);
+    toast(ok ? 'Copied' : 'Copy failed — select the text manually');
+  }
+
+  async function shareText(text) {
+    if (!text) { toast('Nothing to share'); return; }
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: text });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+      }
+    }
+    await copyText(text);
+  }
+
+  // ══ Banner ══════════════════════════════════════════════════
+  function clearBanner() { el('banner-slot').innerHTML = ''; }
+
+  function showBanner(kind, message, actions) {
+    const slot = el('banner-slot');
+    slot.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'banner ' + kind;
+    const p = document.createElement('div');
+    p.textContent = message;
+    box.appendChild(p);
+    if (actions && actions.length) {
+      const row = document.createElement('div');
+      row.className = 'banner-actions';
+      actions.forEach(a => {
+        const b = document.createElement('button');
+        b.textContent = a.label;
+        if (a.primary) b.className = 'primary';
+        if (a.danger) b.className = 'danger';
+        b.addEventListener('click', a.onClick);
+        row.appendChild(b);
+      });
+      box.appendChild(row);
+    }
+    slot.appendChild(box);
+  }
+
+  // ══ Screens ═════════════════════════════════════════════════
+  const TITLES = {
+    record: 'Stow',
+    settings: 'Settings',
+    preset: 'Edit preset',
+    history: 'History',
+    entry: 'Session'
+  };
+  let screenStack = ['record'];
+
+  function showScreen(name, push) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    el('screen-' + name).classList.add('active');
+    document.body.dataset.screen = name;
+    el('screen-title').textContent = TITLES[name] || 'Stow';
+    el('btn-back').hidden = name === 'record';
+    el('btn-history').hidden = name !== 'record';
+    el('btn-settings').hidden = name !== 'record';
+    document.querySelector('main').scrollTop = 0;
+
+    if (push === false) return;
+    if (name === 'record') screenStack = ['record'];
+    else if (screenStack[screenStack.length - 1] !== name) screenStack.push(name);
+
+    if (name === 'settings') renderSettings();
+    if (name === 'history') renderHistory();
+  }
+
+  function goBack() {
+    screenStack.pop();
+    const target = screenStack[screenStack.length - 1] || 'record';
+    showScreen(target, false);
+    if (target === 'settings') renderSettings();
+    if (target === 'history') renderHistory();
+    if (target === 'record') screenStack = ['record'];
+  }
+
+  // ══ Settings rendering ══════════════════════════════════════
+  function maskKey(key) {
+    if (key.length <= 8) return '•'.repeat(key.length);
+    return key.slice(0, 4) + '•'.repeat(Math.max(4, key.length - 8)) + key.slice(-4);
+  }
+
+  function renderSettings() {
+    const key = getApiKey();
+    el('key-set').classList.toggle('hidden', !key);
+    el('key-entry').classList.toggle('hidden', !!key);
+    el('key-masked').textContent = key ? maskKey(key) : '';
+    el('input-key').value = '';
+    el('btn-key-cancel').hidden = !key;
+    el('input-jargon').value = getJargon();
+    renderPresetList();
+  }
+
+  function renderPresetList() {
+    const list = el('preset-list');
+    list.innerHTML = '';
+    getPresets().forEach(p => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.className = 'entry';
+      const title = document.createElement('span');
+      title.className = 'title';
+      title.textContent = p.name;
+      if (isBuiltIn(p.id)) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = 'built-in';
+        title.appendChild(badge);
+      }
+      const preview = document.createElement('span');
+      preview.className = 'preview';
+      preview.textContent = p.prompt.replace(/\s+/g, ' ').slice(0, 90);
+      btn.appendChild(title);
+      btn.appendChild(preview);
+      btn.addEventListener('click', () => openPresetEditor(p));
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  }
+
+  // ══ Preset editor ═══════════════════════════════════════════
+  let editingId = null;
+
+  function openPresetEditor(preset) {
+    editingId = preset ? preset.id : null;
+    el('preset-name').value = preset ? preset.name : '';
+    el('preset-prompt').value = preset ? preset.prompt : '';
+    const builtIn = !!preset && isBuiltIn(preset.id);
+    el('btn-preset-reset').hidden = !builtIn;
+    el('btn-preset-delete').hidden = !preset || builtIn;
+    showScreen('preset');
+  }
+
+  function savePresetFromEditor() {
+    const name = el('preset-name').value.trim();
+    const prompt = el('preset-prompt').value.trim();
+    if (!name || !prompt) {
+      toast('Name and prompt are both required');
+      return;
+    }
+    const all = getPresets();
+    if (editingId) {
+      const i = all.findIndex(p => p.id === editingId);
+      if (i < 0) { toast('Preset no longer exists'); goBack(); return; }
+      all[i] = { id: editingId, name: name, prompt: prompt };
+    } else {
+      const created = { id: uid(), name: name, prompt: prompt };
+      all.push(created);
+      setSelectedPreset(created.id);
+    }
+    savePresets(all);
+    refreshPresetSelect();
+    toast('Preset saved');
+    goBack();
+  }
+
+  // ══ History rendering ═══════════════════════════════════════
+  function renderHistory() {
+    const entries = loadHistory();
+    const list = el('history-list');
+    list.innerHTML = '';
+    el('history-empty').classList.toggle('hidden', entries.length > 0);
+    el('btn-history-clear').disabled = entries.length === 0;
+
+    entries.forEach(entry => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.className = 'entry';
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      let metaText = fmtTimestamp(entry.at);
+      if (entry.durationSec != null) metaText += ' · ' + fmtDuration(entry.durationSec);
+      if (entry.preset) metaText += ' · ' + entry.preset;
+      if (!entry.polishedText) metaText += ' · raw only';
+      meta.textContent = metaText;
+
+      const preview = document.createElement('span');
+      preview.className = 'preview';
+      preview.textContent = (entry.polishedText || entry.rawText).replace(/\s+/g, ' ').slice(0, 90);
+
+      btn.appendChild(meta);
+      btn.appendChild(preview);
+      btn.addEventListener('click', () => openEntry(entry.id));
+
+      const del = document.createElement('button');
+      del.className = 'icon danger shrink';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', 'Delete session from ' + metaText);
+      del.addEventListener('click', () => {
+        if (!confirm('Delete this session? This cannot be undone.')) return;
+        deleteHistory(entry.id);
+        renderHistory();
+        toast('Session deleted');
+      });
+
+      li.appendChild(btn);
+      li.appendChild(del);
+      list.appendChild(li);
+    });
+  }
+
+  let entryState = { entry: null, showRaw: false };
+
+  function openEntry(id) {
+    const entry = loadHistory().find(e => e.id === id);
+    if (!entry) { toast('Session no longer exists'); return; }
+    entryState = { entry: entry, showRaw: !entry.polishedText };
+    paintEntry();
+    showScreen('entry');
+  }
+
+  function paintEntry() {
+    const entry = entryState.entry;
+    if (!entry) return;
+    const hasPolished = !!entry.polishedText;
+    const showRaw = entryState.showRaw || !hasPolished;
+    el('entry-heading').textContent = showRaw
+      ? (hasPolished ? 'Raw transcript' : 'Raw transcript (not polished)')
+      : 'Polished';
+    el('entry-md').classList.toggle('hidden', showRaw);
+    el('entry-raw').classList.toggle('hidden', !showRaw);
+    if (showRaw) el('entry-raw').textContent = entry.rawText;
+    else el('entry-md').innerHTML = renderMarkdown(entry.polishedText);
+    el('btn-entry-toggle-raw').disabled = !hasPolished;
+    el('btn-entry-toggle-raw').textContent = showRaw && hasPolished ? 'Polished' : 'Raw';
+  }
+
+  const entryText = () => {
+    const entry = entryState.entry;
+    if (!entry) return '';
+    return (entryState.showRaw || !entry.polishedText) ? entry.rawText : entry.polishedText;
+  };
+
+  // ══ Preset selector (footer) ════════════════════════════════
+  function refreshPresetSelect() {
+    const sel = el('preset-select');
+    const selected = getSelectedPreset();
+    sel.innerHTML = '';
+    getPresets().forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (p.id === selected.id) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  // ══ Wiring ══════════════════════════════════════════════════
+  el('btn-record').addEventListener('click', () => {
+    if (recorder && recorder.state === 'recording') stopRecording();
+    else startRecording();
+  });
+
+  el('preset-select').addEventListener('change', e => {
+    setSelectedPreset(e.target.value);
+    toast('Using "' + getSelectedPreset().name + '"');
+  });
+
+  el('btn-settings').addEventListener('click', () => showScreen('settings'));
+  el('btn-history').addEventListener('click', () => showScreen('history'));
+  el('btn-back').addEventListener('click', goBack);
+
+  el('btn-copy').addEventListener('click', () => copyText(resultText()));
+  el('btn-share').addEventListener('click', () => shareText(resultText()));
+  el('btn-toggle-raw').addEventListener('click', () => {
+    showingRaw = !showingRaw;
+    paintResult();
+  });
+
+  el('btn-key-save').addEventListener('click', () => {
+    const key = el('input-key').value.trim();
+    if (!key) { toast('Enter a key first'); return; }
+    lsSet(KEYS.apiKey, key);
+    renderSettings();
+    toast('API key saved');
+  });
+  el('btn-key-change').addEventListener('click', () => {
+    el('key-set').classList.add('hidden');
+    el('key-entry').classList.remove('hidden');
+    el('input-key').focus();
+  });
+  el('btn-key-cancel').addEventListener('click', renderSettings);
+  el('btn-key-clear').addEventListener('click', () => {
+    if (!confirm('Clear the stored Groq API key from this browser?')) return;
+    lsRemove(KEYS.apiKey);
+    renderSettings();
+    toast('API key cleared');
+  });
+
+  el('btn-jargon-save').addEventListener('click', () => {
+    lsSet(KEYS.jargon, el('input-jargon').value.trim());
+    toast('Dictionary saved');
+  });
+
+  el('btn-preset-new').addEventListener('click', () => openPresetEditor(null));
+  el('btn-preset-save').addEventListener('click', savePresetFromEditor);
+  el('btn-preset-reset').addEventListener('click', () => {
+    if (!editingId || !isBuiltIn(editingId)) return;
+    if (!confirm('Restore the built-in name and prompt? Your edits to this preset are lost.')) return;
+    const restored = defaultPreset(editingId);
+    const all = getPresets();
+    const i = all.findIndex(p => p.id === editingId);
+    if (i >= 0) all[i] = restored;
+    savePresets(all);
+    el('preset-name').value = restored.name;
+    el('preset-prompt').value = restored.prompt;
+    refreshPresetSelect();
+    toast('Preset reset to default');
+  });
+  el('btn-preset-delete').addEventListener('click', () => {
+    if (!editingId || isBuiltIn(editingId)) return;
+    if (!confirm('Delete this preset?')) return;
+    savePresets(getPresets().filter(p => p.id !== editingId));
+    if (lsGet(KEYS.selected) === editingId) setSelectedPreset(ID_CLEAN_PROSE);
+    refreshPresetSelect();
+    toast('Preset deleted');
+    goBack();
+  });
+
+  el('btn-history-clear').addEventListener('click', () => {
+    if (!confirm('Delete all saved sessions? This cannot be undone.')) return;
+    lsRemove(KEYS.history);
+    renderHistory();
+    toast('History cleared');
+  });
+
+  el('btn-entry-copy').addEventListener('click', () => copyText(entryText()));
+  el('btn-entry-share').addEventListener('click', () => shareText(entryText()));
+  el('btn-entry-toggle-raw').addEventListener('click', () => {
+    entryState.showRaw = !entryState.showRaw;
+    paintEntry();
+  });
+  el('btn-entry-delete').addEventListener('click', () => {
+    if (!entryState.entry) return;
+    if (!confirm('Delete this session? This cannot be undone.')) return;
+    deleteHistory(entryState.entry.id);
+    entryState = { entry: null, showRaw: false };
+    toast('Session deleted');
+    goBack();
+  });
+
+  // Screen wake locks are dropped whenever the page is hidden; re-take it when
+  // the user comes back mid-recording.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && recorder && recorder.state === 'recording') {
+      acquireWakeLock();
+    }
+  });
+
+  // Losing the page mid-recording loses the audio, which is worth a prompt.
+  window.addEventListener('beforeunload', e => {
+    if ((recorder && recorder.state === 'recording') || session) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+  // ══ Boot ════════════════════════════════════════════════════
+  refreshPresetSelect();
+  showScreen('record');
+  setRecordButton('idle', 'Start recording');
+
+  if (!getApiKey()) {
+    showBanner('info', 'Add your Groq API key in Settings to start dictating. It is stored only in this browser.', [
+      { label: 'Open Settings', primary: true, onClick: () => showScreen('settings') }
+    ]);
+  }
+})();
+</script>
+</body>
+</html>
