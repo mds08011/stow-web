@@ -1,0 +1,46 @@
+name: Prompt drift check
+
+# The built-in polish prompts are duplicated between this repo and Android Stow
+# (mds08011/stow, PolishPresets.kt). They share preset names, so a divergence is
+# silent: nothing breaks, the same preset just quietly stops producing the same
+# output on phone and iPad.
+#
+# The schedule matters as much as the push trigger — drift is far more likely to
+# be introduced on the Android side, where nothing here would otherwise run.
+
+on:
+  push:
+    paths:
+      - 'index.html'
+      - '.github/check-prompt-drift.js'
+      - '.github/workflows/prompt-drift.yml'
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check the inline script
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = fs.readFileSync('index.html', 'utf8').match(/<script>([\s\S]*?)<\/script>/);
+            if (!m) { console.error('no inline script found in index.html'); process.exit(1); }
+            fs.writeFileSync('/tmp/stow-inline.js', m[1]);
+          "
+          node --check /tmp/stow-inline.js
+          echo "inline script parses"
+
+      - name: Compare prompts against Android Stow
+        run: node .github/check-prompt-drift.js

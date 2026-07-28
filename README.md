@@ -76,6 +76,24 @@ The jargon dictionary is appended to any preset automatically. If you want contr
 
 The preset selector sits next to the record button and remembers your last choice.
 
+### Keeping the built-in prompts in sync
+
+The two built-in prompts are duplicated here and in Android Stow's `PolishPresets.kt`. Since both apps use the same preset names, a divergence would be silent — nothing breaks, the same preset just quietly stops producing the same output on the phone and the iPad.
+
+`.github/check-prompt-drift.js` guards against that. It fetches `PolishPresets.kt` from `mds08011/stow` and fails if either prompt no longer matches byte for byte, naming the first differing line. CI runs it on every push that touches `index.html`, on pull requests, and weekly — the schedule matters most, because drift is far more likely to be introduced on the Android side, where nothing in this repo would otherwise run.
+
+Run it yourself against the live source, or against a local checkout:
+
+```bash
+node .github/check-prompt-drift.js
+```
+
+```bash
+node .github/check-prompt-drift.js ../stow
+```
+
+If you deliberately revise a prompt, change it in both repos.
+
 ## When a Groq call fails
 
 Your recording is never thrown away by a failure. The audio blob stays in memory and the error banner gives you the options:
