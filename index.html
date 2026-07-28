@@ -371,6 +371,10 @@ label.field > span.lbl {
   color: var(--text-dim);
   overflow-wrap: anywhere;
 }
+.key-msg { font-size: 13px; margin: 10px 0 0; }
+.key-msg.ok { color: var(--ok); }
+.key-msg.bad { color: var(--danger); }
+.key-msg.busy { color: var(--text-dim); }
 .hidden { display: none !important; }
 </style>
 </head>
@@ -414,6 +418,7 @@ label.field > span.lbl {
         <p class="mono-key" id="key-masked"></p>
         <div class="row" style="margin-top:10px">
           <button id="btn-key-change">Change</button>
+          <button id="btn-key-test">Test</button>
           <button class="danger" id="btn-key-clear">Clear</button>
         </div>
       </div>
@@ -421,9 +426,11 @@ label.field > span.lbl {
         <input type="password" id="input-key" placeholder="gsk_..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         <div class="row" style="margin-top:10px">
           <button class="primary" id="btn-key-save">Save key</button>
+          <button id="btn-key-test-new">Test</button>
           <button id="btn-key-cancel" hidden>Cancel</button>
         </div>
       </div>
+      <p class="key-msg hidden" id="key-msg"></p>
       <p class="hint">Stored in this browser's localStorage and sent only to api.groq.com. Get one at console.groq.com.</p>
     </div>
 
@@ -531,6 +538,8 @@ label.field > span.lbl {
   };
   const TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+  /** Cheapest authenticated endpoint — used only to verify a key in Settings. */
+  const MODELS_URL = 'https://api.groq.com/openai/v1/models';
 
   /**
    * Whisper biasing prompt base, copied verbatim from RecordingService.kt. The
@@ -625,6 +634,14 @@ label.field > span.lbl {
     return h ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s);
   }
 
+  /** "45s" / "2m 30s" — for wait times, which read badly as 00:45. */
+  function fmtWait(sec) {
+    sec = Math.max(0, Math.ceil(sec || 0));
+    if (sec < 60) return sec + 's';
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return s ? m + 'm ' + s + 's' : m + 'm';
+  }
+
   function fmtTimestamp(ms) {
     const d = new Date(ms);
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
@@ -653,6 +670,82 @@ label.field > span.lbl {
 
   function getApiKey() { return lsGet(KEYS.apiKey) || ''; }
   function getJargon() { return lsGet(KEYS.jargon) || ''; }
+
+  // ══ Pending-session store (IndexedDB) ═══════════════════════
+  /**
+   * An unfinished recording is parked here so it survives more than the life of
+   * the tab. This matters most on the primary target: iPadOS evicts backgrounded
+   * Safari tabs aggressively, and an in-memory-only blob would make the Retry
+   * button a lie exactly when it is needed. localStorage cannot hold a Blob, so
+   * this is IndexedDB.
+   *
+   * Every operation is best-effort. If IndexedDB is unavailable (private mode,
+   * blocked storage) the app still works — a parked recording simply does not
+   * outlive the tab, which is where we started.
+   */
+  const IDB_NAME = 'stow';
+  const IDB_STORE = 'pending';
+  const PENDING_KEY = 'current';
+  let idb = null;
+  let idbTried = false;
+
+  function idbOpen() {
+    if (idb) return Promise.resolve(idb);
+    if (idbTried) return Promise.resolve(null);
+    idbTried = true;
+    return new Promise(resolve => {
+      let req;
+      try { req = indexedDB.open(IDB_NAME, 1); } catch (_) { resolve(null); return; }
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => { idb = req.result; resolve(idb); };
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    });
+  }
+
+  function idbRun(mode, fn) {
+    return idbOpen().then(db => {
+      if (!db) return null;
+      return new Promise(resolve => {
+        let tx;
+        try { tx = db.transaction(IDB_STORE, mode); } catch (_) { resolve(null); return; }
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req ? req.result : null);
+        tx.onerror = () => resolve(null);
+        tx.onabort = () => resolve(null);
+      });
+    }).catch(() => null);
+  }
+
+  /**
+   * Snapshot the in-flight session. Called as soon as the blob exists and again
+   * once a transcript arrives, so a crash between the two stages still resumes
+   * from the furthest point reached.
+   */
+  function persistSession(s) {
+    if (!s) return Promise.resolve(null);
+    return idbRun('readwrite', st => st.put({
+      id: PENDING_KEY,
+      at: s.at,
+      blob: s.blob,
+      mime: s.mime,
+      durationSec: s.durationSec,
+      presetId: s.preset && s.preset.id,
+      presetName: s.preset && s.preset.name,
+      rawText: s.rawText || null
+    }));
+  }
+
+  function clearPersistedSession() {
+    return idbRun('readwrite', st => st.delete(PENDING_KEY));
+  }
+
+  function readPersistedSession() {
+    return idbRun('readonly', st => st.get(PENDING_KEY));
+  }
 
   // ══ Polish presets ══════════════════════════════════════════
   function defaultPreset(id) {
@@ -911,11 +1004,52 @@ label.field > span.lbl {
 
   // ══ Groq API ════════════════════════════════════════════════
   class ApiError extends Error {
-    constructor(message, status) {
+    constructor(message, status, retryAfter) {
       super(message);
       this.name = 'ApiError';
       this.status = status || 0;
+      /** Seconds to wait before retrying is worth attempting, 0 if unknown. */
+      this.retryAfter = retryAfter || 0;
     }
+  }
+
+  /** Longest wait worth counting down before telling the user to come back later. */
+  const MAX_RETRY_WAIT_SEC = 900;
+
+  /**
+   * How long to wait before a retry could succeed.
+   *
+   * Groq answers this two ways and neither alone is reliable: a `retry-after`
+   * header, and prose in the error body — "try again in 7.66s" or
+   * "try again in 2m59.56s". Take whichever is larger, then floor it, because a
+   * retry that fires a moment too early just burns another rate-limit slot.
+   */
+  function parseRetryAfter(res, bodyText, status) {
+    let wait = 0;
+    try {
+      const header = res.headers && res.headers.get && res.headers.get('retry-after');
+      const n = parseFloat(header);
+      if (isFinite(n) && n > 0) wait = n;
+    } catch (_) { /* header access can throw on opaque responses */ }
+
+    const m = /try again in (?:(\d+)m)?([\d.]+)s/i.exec(bodyText || '');
+    if (m) {
+      wait = Math.max(wait, (parseInt(m[1] || '0', 10) * 60) + parseFloat(m[2]));
+    }
+    if (!wait) wait = status === 429 ? 12 : 6;
+    return Math.min(Math.ceil(Math.max(wait, 3)), MAX_RETRY_WAIT_SEC);
+  }
+
+  /** Reads the body once and turns a non-2xx response into an ApiError. */
+  async function toApiError(res, what) {
+    let body = '';
+    try { body = await res.text(); } catch (_) {}
+    const retryable = res.status === 429 || res.status >= 500;
+    return new ApiError(
+      body || res.statusText || (what + ' failed'),
+      res.status,
+      retryable ? parseRetryAfter(res, body, res.status) : 0
+    );
   }
 
   /** Turns a Groq failure into something worth reading on a phone. */
@@ -939,7 +1073,10 @@ label.field > span.lbl {
       return 'Recording is too large for Groq (25 MB limit). Record shorter takes.';
     }
     if (status === 429) {
-      return 'Groq rate limit hit. Wait a moment, then retry.';
+      const wait = e && e.retryAfter;
+      return wait
+        ? 'Groq rate limit hit. It should clear in about ' + fmtWait(wait) + '.'
+        : 'Groq rate limit hit. Wait a moment, then retry.';
     }
     if (status >= 500) {
       return 'Groq had a server error (' + status + '). Your recording is kept — retry.';
@@ -978,13 +1115,30 @@ label.field > span.lbl {
       headers: { Authorization: 'Bearer ' + apiKey },
       body: form
     });
-    if (!res.ok) {
-      throw new ApiError(await res.text() || res.statusText || 'Transcription failed', res.status);
-    }
+    if (!res.ok) throw await toApiError(res, 'Transcription');
     const data = await res.json();
     const text = (data && typeof data.text === 'string') ? data.text.trim() : '';
     if (!text) throw new ApiError('Groq returned an empty transcript.', 0);
     return text;
+  }
+
+  /**
+   * Verifies a key without spending a recording on it. GET /models is the
+   * cheapest authenticated call Groq offers and needs no request body.
+   */
+  async function testApiKey(key) {
+    if (!key) return { ok: false, message: 'Enter a key first.' };
+    let res;
+    try {
+      res = await fetch(MODELS_URL, { headers: { Authorization: 'Bearer ' + key } });
+    } catch (_) {
+      return { ok: false, message: 'Could not reach Groq — check your connection.' };
+    }
+    if (res.ok) return { ok: true, message: 'Key works.' };
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, message: 'Groq rejected that key (' + res.status + ').' };
+    }
+    return { ok: false, message: 'Groq answered ' + res.status + '. The key may still be fine — try again.' };
   }
 
   /** Polish pass. Two messages, temperature 0.2, no max_tokens — as on Android. */
@@ -1004,9 +1158,7 @@ label.field > span.lbl {
         ]
       })
     });
-    if (!res.ok) {
-      throw new ApiError(await res.text() || res.statusText || 'Polish failed', res.status);
-    }
+    if (!res.ok) throw await toApiError(res, 'Polish');
     const data = await res.json();
     const choice = data && data.choices && data.choices[0];
     const content = choice && choice.message && choice.message.content;
@@ -1075,7 +1227,10 @@ label.field > span.lbl {
     if (session && !confirm('The previous recording has not been saved yet. Start a new one and discard it?')) {
       return;
     }
-    session = null;
+    if (session) {
+      session = null;
+      clearPersistedSession();
+    }
     clearBanner();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -1185,6 +1340,7 @@ label.field > span.lbl {
     }
 
     session = {
+      at: Date.now(),
       blob: blob,
       mime: mimeUsed,
       durationSec: durationSec,
@@ -1192,6 +1348,9 @@ label.field > span.lbl {
       rawText: null,
       polishedText: null
     };
+    // Persist before the first upload, not after it fails — the whole point is
+    // to survive a crash during the network call.
+    await persistSession(session);
     runPipeline();
   }
 
@@ -1216,9 +1375,12 @@ label.field > span.lbl {
       try {
         session.rawText = await transcribe(session.blob, session.mime, apiKey, jargon);
       } catch (e) {
-        failStage(humanError(e, 'Transcription'), 'Retry transcription');
+        failStage(humanError(e, 'Transcription'), 'Retry transcription', false, e);
         return;
       }
+      // Checkpoint: a crash from here on resumes at the polish stage rather
+      // than paying for the same transcription twice.
+      await persistSession(session);
     }
 
     setRecordButton('busy', 'Polishing…');
@@ -1228,7 +1390,7 @@ label.field > span.lbl {
         session.rawText, apiKey, buildSystemPrompt(session.preset, jargon)
       );
     } catch (e) {
-      failStage(humanError(e, 'Polish'), 'Retry polish', true);
+      failStage(humanError(e, 'Polish'), 'Retry polish', true, e);
       return;
     }
 
@@ -1236,14 +1398,27 @@ label.field > span.lbl {
   }
 
   /**
-   * Park the session on a failure. The audio blob stays in memory and the
-   * banner is the only way out: retry, keep the raw transcript, or discard.
+   * Park the session on a failure. The banner is the only way out: retry, keep
+   * the raw transcript, or discard. The audio is already in IndexedDB by now,
+   * so even closing the tab does not lose it.
+   *
+   * When Groq told us how long to wait, the Retry button counts down and stays
+   * disabled until it could plausibly succeed — retrying a rate limit early
+   * just burns another slot. It does not fire on its own; a session holding
+   * unsaved audio should not act without being asked.
    */
-  function failStage(message, retryLabel, rawAvailable) {
+  function failStage(message, retryLabel, rawAvailable, err) {
     setRecordButton('idle', 'Start recording');
     el('status').textContent = 'Recording kept — nothing was lost';
 
-    const actions = [{ label: retryLabel, primary: true, onClick: runPipeline }];
+    const wait = (err && err.retryAfter) || 0;
+    const actions = [{
+      label: retryLabel,
+      primary: true,
+      onClick: runPipeline,
+      countdown: wait,
+      countdownLabel: sec => 'Retry in ' + fmtWait(sec)
+    }];
     if (rawAvailable && session && session.rawText) {
       actions.push({ label: 'Keep raw transcript', onClick: finishSession });
     }
@@ -1255,12 +1430,12 @@ label.field > span.lbl {
     }
   }
 
-  /** Commit the session to history and release the audio blob. */
+  /** Commit the session to history and release the audio. */
   function finishSession() {
     if (!session) return;
     clearBanner();
     addHistory({
-      at: Date.now(),
+      at: session.at || Date.now(),
       durationSec: session.durationSec,
       preset: session.preset.name,
       rawText: session.rawText,
@@ -1270,10 +1445,12 @@ label.field > span.lbl {
     el('status').textContent = 'Saved to history';
     setRecordButton('idle', 'Start recording');
     session = null;
+    clearPersistedSession();
   }
 
   function discardSession() {
     session = null;
+    clearPersistedSession();
     clearBanner();
     el('result-card').classList.add('hidden');
     el('idle-card').classList.remove('hidden');
@@ -1281,6 +1458,47 @@ label.field > span.lbl {
     el('status').textContent = 'Ready';
     setRecordButton('idle', 'Start recording');
     toast('Recording discarded');
+  }
+
+  /**
+   * Offer an unfinished recording left behind by a previous visit — a crash, a
+   * reload, or iPadOS evicting the tab mid-session.
+   */
+  async function restorePendingSession() {
+    let saved;
+    try { saved = await readPersistedSession(); } catch (_) { return false; }
+    if (!saved || !saved.blob || !saved.blob.size) return false;
+
+    // The preset may have been renamed, edited, or deleted since. Prefer the
+    // one it was recorded with; fall back to whatever is selected now.
+    const preset = getPresets().find(p => p.id === saved.presetId) || getSelectedPreset();
+
+    session = {
+      at: saved.at || Date.now(),
+      blob: saved.blob,
+      mime: saved.mime,
+      durationSec: saved.durationSec,
+      preset: preset,
+      rawText: saved.rawText || null,
+      polishedText: null
+    };
+
+    el('timer').textContent = fmtDuration(session.durationSec);
+    el('status').textContent = 'Unfinished recording restored';
+
+    const when = fmtTimestamp(session.at);
+    const stage = session.rawText
+      ? 'It was transcribed but not polished.'
+      : 'It was never transcribed.';
+    showBanner('info',
+      'An unfinished recording from ' + when + ' (' + fmtDuration(session.durationSec) + ') was restored. ' + stage,
+      [
+        { label: session.rawText ? 'Polish it' : 'Transcribe it', primary: true, onClick: runPipeline },
+        { label: 'Discard', danger: true, onClick: discardSession }
+      ]
+    );
+    if (session.rawText) showResult(session.rawText, null);
+    return true;
   }
 
   // ══ Result view ═════════════════════════════════════════════
@@ -1355,11 +1573,17 @@ label.field > span.lbl {
   }
 
   // ══ Banner ══════════════════════════════════════════════════
-  function clearBanner() { el('banner-slot').innerHTML = ''; }
+  let bannerCountdownId = null;
+
+  function clearBanner() {
+    clearInterval(bannerCountdownId);
+    bannerCountdownId = null;
+    el('banner-slot').innerHTML = '';
+  }
 
   function showBanner(kind, message, actions) {
     const slot = el('banner-slot');
-    slot.innerHTML = '';
+    clearBanner();
     const box = document.createElement('div');
     box.className = 'banner ' + kind;
     const p = document.createElement('div');
@@ -1375,10 +1599,29 @@ label.field > span.lbl {
         if (a.danger) b.className = 'danger';
         b.addEventListener('click', a.onClick);
         row.appendChild(b);
+        if (a.countdown > 0) startCountdown(b, a);
       });
       box.appendChild(row);
     }
     slot.appendChild(box);
+  }
+
+  /** Disables a button until `a.countdown` seconds have elapsed. */
+  function startCountdown(button, a) {
+    let left = Math.ceil(a.countdown);
+    button.disabled = true;
+    button.textContent = a.countdownLabel(left);
+    bannerCountdownId = setInterval(() => {
+      left--;
+      if (left > 0) {
+        button.textContent = a.countdownLabel(left);
+        return;
+      }
+      clearInterval(bannerCountdownId);
+      bannerCountdownId = null;
+      button.disabled = false;
+      button.textContent = a.label;
+    }, 1000);
   }
 
   // ══ Screens ═════════════════════════════════════════════════
@@ -1432,7 +1675,28 @@ label.field > span.lbl {
     el('input-key').value = '';
     el('btn-key-cancel').hidden = !key;
     el('input-jargon').value = getJargon();
+    setKeyMsg('');
     renderPresetList();
+  }
+
+  function setKeyMsg(text, kind) {
+    const p = el('key-msg');
+    p.textContent = text;
+    p.className = 'key-msg' + (text ? ' ' + (kind || '') : ' hidden');
+  }
+
+  /** Shared by both Test buttons: check the typed key if entering one, else the stored one. */
+  async function runKeyTest(button) {
+    const entering = !el('key-entry').classList.contains('hidden');
+    const key = entering ? el('input-key').value.trim() : getApiKey();
+    button.disabled = true;
+    setKeyMsg('Checking…', 'busy');
+    try {
+      const result = await testApiKey(key);
+      setKeyMsg(result.message, result.ok ? 'ok' : 'bad');
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function renderPresetList() {
@@ -1622,8 +1886,11 @@ label.field > span.lbl {
   el('btn-key-change').addEventListener('click', () => {
     el('key-set').classList.add('hidden');
     el('key-entry').classList.remove('hidden');
+    setKeyMsg('');
     el('input-key').focus();
   });
+  el('btn-key-test').addEventListener('click', e => runKeyTest(e.currentTarget));
+  el('btn-key-test-new').addEventListener('click', e => runKeyTest(e.currentTarget));
   el('btn-key-cancel').addEventListener('click', renderSettings);
   el('btn-key-clear').addEventListener('click', () => {
     if (!confirm('Clear the stored Groq API key from this browser?')) return;
@@ -1692,9 +1959,11 @@ label.field > span.lbl {
     }
   });
 
-  // Losing the page mid-recording loses the audio, which is worth a prompt.
+  // An in-progress recording is still only in memory — MediaRecorder chunks are
+  // not flushed anywhere until stop. A parked session is already in IndexedDB,
+  // so it does not need the prompt.
   window.addEventListener('beforeunload', e => {
-    if ((recorder && recorder.state === 'recording') || session) {
+    if (recorder && recorder.state === 'recording') {
       e.preventDefault();
       e.returnValue = '';
     }
@@ -1705,11 +1974,16 @@ label.field > span.lbl {
   showScreen('record');
   setRecordButton('idle', 'Start recording');
 
-  if (!getApiKey()) {
-    showBanner('info', 'Add your Groq API key in Settings to start dictating. It is stored only in this browser.', [
-      { label: 'Open Settings', primary: true, onClick: () => showScreen('settings') }
-    ]);
-  }
+  (async () => {
+    // A restored recording outranks the setup nudge: it is time-sensitive and
+    // the key can be fixed from the same screen either way.
+    if (await restorePendingSession()) return;
+    if (!getApiKey()) {
+      showBanner('info', 'Add your Groq API key in Settings to start dictating. It is stored only in this browser.', [
+        { label: 'Open Settings', primary: true, onClick: () => showScreen('settings') }
+      ]);
+    }
+  })();
 })();
 </script>
 </body>

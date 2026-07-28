@@ -30,7 +30,9 @@ HTTPS is not optional — Safari refuses microphone access on anything but a sec
 
 ### Add your API key
 
-Get a key at [console.groq.com](https://console.groq.com/keys), then open **Settings** in the app and paste it. It is written to `localStorage` on that device and sent only in the `Authorization` header of requests to `api.groq.com`. Nothing else ever sees it. The settings screen shows it masked, with a **Clear** button.
+Get a key at [console.groq.com](https://console.groq.com/keys), then open **Settings** in the app and paste it. It is written to `localStorage` on that device and sent only in the `Authorization` header of requests to `api.groq.com`. Nothing else ever sees it. The settings screen shows it masked, with **Test** and **Clear** buttons.
+
+**Test** verifies the key against Groq's `/models` endpoint so you find out immediately, rather than after recording something and getting a 401. It checks whatever is in the entry field when you are typing a new key, and the stored key otherwise.
 
 Because the key lives in browser storage on a page anyone can view-source, treat it as a personal-device key. Rotate it if the device is lost.
 
@@ -96,7 +98,7 @@ If you deliberately revise a prompt, change it in both repos.
 
 ## When a Groq call fails
 
-Your recording is never thrown away by a failure. The audio blob stays in memory and the error banner gives you the options:
+Your recording is never thrown away by a failure. The error banner gives you the options:
 
 - **Retry** — re-runs only the stage that failed. A failed polish does not re-upload or re-transcribe the audio.
 - **Keep raw transcript** — shown when transcription succeeded but polish did not. Saves the session with the raw text only.
@@ -106,9 +108,15 @@ Starting a new recording while an unsaved one is parked will ask before discardi
 
 Errors are translated rather than dumped: a 401 says the key was rejected, a 429 says rate limit, a 413 says the file exceeds Groq's 25 MB limit, and a dropped connection says you are offline.
 
+**Rate limits tell you how long.** Groq reports the wait two ways and neither is reliable alone — a `retry-after` header, and prose in the error body (`try again in 2m59.56s`). Stow Web takes whichever is larger and counts the Retry button down, keeping it disabled until a retry could actually succeed, because retrying early just burns another slot. It does not fire on its own: a session holding unsaved audio should not act without being asked.
+
+**The recording outlives the tab.** The audio blob is written to IndexedDB as soon as recording stops — before the first upload, not after it fails — and again once a transcript comes back. If the tab is reloaded, crashes, or is evicted by iPadOS while a session is unfinished, the next launch offers it back with **Transcribe it** / **Polish it** and **Discard**. Resuming picks up from the furthest stage reached, so a crash after transcription does not pay for the same transcription twice. The record is deleted once the session is saved or discarded.
+
+This matters specifically on the primary target: iPadOS evicts backgrounded Safari tabs aggressively, and an in-memory-only blob would make the Retry button a promise the app could not keep. If IndexedDB is unavailable (private browsing, blocked storage) everything still works — an unfinished recording just does not survive the tab.
+
 ## Storage
 
-Everything is `localStorage` under these keys:
+Settings and history are `localStorage`; an unfinished recording's audio is IndexedDB (`stow` → `pending`), since `localStorage` cannot hold a Blob.
 
 | Key | Contents |
 |---|---|
@@ -129,7 +137,7 @@ Deliberately not ported from Android Stow:
 - **Background recording** — impossible in a web page. See above.
 - **Persistent notification with a Stop action** — same reason.
 - **Auto-copy on transcribe** — iOS only allows clipboard writes from a user gesture, so copying is a tap on the Copy button instead of automatic.
-- **Daily Groq usage meter** — the Android app tracked minutes against the free-tier 8h/day limit in local prefs. Check the Groq console instead.
+- **Daily Groq usage meter** — the Android app tracked minutes against the free-tier 8h/day limit in local prefs. Check the Groq console instead. ([sluice](https://github.com/mds08011/sluice) has a working web implementation of this if it is wanted later.)
 - **Legacy `Stow_Log.txt` migration** — nothing to migrate on a fresh install.
 - **Editing the result text in place** and saving edits back to history — read-only view in v1.
 - **Re-polish a history entry with a different preset** — you can copy the raw transcript out, but there is no in-app re-run.
