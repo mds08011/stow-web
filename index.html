@@ -371,6 +371,33 @@ label.field > span.lbl {
   color: var(--text-dim);
   overflow-wrap: anywhere;
 }
+/* ── Daily free-tier meter ──────────────────────────────────── */
+.usage { padding: 2px 4px 4px; }
+.usage-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.usage-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width .3s ease;
+}
+.usage-bar.near span { background: var(--danger); }
+@media (prefers-reduced-motion: reduce) { .usage-bar span { transition: none } }
+.usage-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  margin: 7px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .key-msg { font-size: 13px; margin: 10px 0 0; }
 .key-msg.ok { color: var(--ok); }
 .key-msg.bad { color: var(--danger); }
@@ -407,6 +434,11 @@ label.field > span.lbl {
         <button id="btn-share">Share</button>
         <button id="btn-toggle-raw">Raw</button>
       </div>
+    </div>
+
+    <div class="usage" id="usage">
+      <div class="usage-bar"><span id="usage-fill"></span></div>
+      <p class="usage-text" id="usage-text"></p>
     </div>
   </section>
 
@@ -611,8 +643,16 @@ label.field > span.lbl {
     jargon: 'stow_jargon',
     presets: 'stow_presets',
     selected: 'stow_selected_preset',
-    history: 'stow_history'
+    history: 'stow_history',
+    usage: 'stow_usage'
   };
+
+  /**
+   * Groq's free tier allows 8 hours of audio per day. Android Stow shows the
+   * same number the same way, so the two apps can be read interchangeably —
+   * though each device counts only its own uploads (see renderUsage).
+   */
+  const FREE_TIER_SECONDS = 8 * 3600;
 
   /**
    * History budget. localStorage is a hard ~5 MB per origin in Safari and there
@@ -670,6 +710,48 @@ label.field > span.lbl {
 
   function getApiKey() { return lsGet(KEYS.apiKey) || ''; }
   function getJargon() { return lsGet(KEYS.jargon) || ''; }
+
+  // ══ Daily usage meter ═══════════════════════════════════════
+  /**
+   * Seconds of audio sent to Groq today, against the free tier's 8 hours.
+   * Ported from Android Stow's LastRecordedDate / DailyUsageSeconds prefs: the
+   * stored day is compared to today's and a stale total reads as zero, so the
+   * counter resets at local midnight without needing a timer.
+   *
+   * Local date, not UTC — the limit that matters is the one the user
+   * experiences, and Android does the same.
+   */
+  function todayKey() {
+    const d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function usageToday() {
+    try {
+      const u = JSON.parse(lsGet(KEYS.usage) || '{}');
+      return (u && u.date === todayKey() && typeof u.sec === 'number' && u.sec > 0) ? u.sec : 0;
+    } catch (_) { return 0; }
+  }
+
+  function addUsage(sec) {
+    if (!(sec > 0)) return;
+    lsSet(KEYS.usage, JSON.stringify({ date: todayKey(), sec: usageToday() + Math.round(sec) }));
+    renderUsage();
+  }
+
+  function renderUsage() {
+    const used = usageToday();
+    const minutes = Math.floor(used / 60);
+    const percent = Math.floor(used / FREE_TIER_SECONDS * 100);
+    el('usage-text').textContent =
+      "Today's usage: " + minutes + 'm (' + percent + '% of 8h Groq free limit)';
+    const bar = el('usage-fill');
+    bar.style.width = Math.min(100, percent) + '%';
+    bar.parentNode.classList.toggle('near', percent >= 80);
+    // The number only reflects what this browser uploaded. Say so, rather than
+    // implying it is the authoritative account-wide figure.
+    el('usage').title = 'Counted on this device only — other devices using the same key are not included.';
+  }
 
   // ══ Pending-session store (IndexedDB) ═══════════════════════
   /**
@@ -1378,6 +1460,9 @@ label.field > span.lbl {
         failStage(humanError(e, 'Transcription'), 'Retry transcription', false, e);
         return;
       }
+      // Counted only on success, and only inside this branch — a resumed
+      // session skips it, so restored recordings are never billed twice here.
+      addUsage(session.durationSec);
       // Checkpoint: a crash from here on resumes at the polish stage rather
       // than paying for the same transcription twice.
       await persistSession(session);
@@ -1643,6 +1728,9 @@ label.field > span.lbl {
     el('btn-history').hidden = name !== 'record';
     el('btn-settings').hidden = name !== 'record';
     document.querySelector('main').scrollTop = 0;
+
+    // Cheap, and it rolls the counter over if the app sat open past midnight.
+    if (name === 'record') renderUsage();
 
     if (push === false) return;
     if (name === 'record') screenStack = ['record'];
@@ -1971,6 +2059,7 @@ label.field > span.lbl {
 
   // ══ Boot ════════════════════════════════════════════════════
   refreshPresetSelect();
+  renderUsage();
   showScreen('record');
   setRecordButton('idle', 'Start recording');
 

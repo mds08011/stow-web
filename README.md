@@ -114,6 +114,17 @@ Errors are translated rather than dumped: a 401 says the key was rejected, a 429
 
 This matters specifically on the primary target: iPadOS evicts backgrounded Safari tabs aggressively, and an in-memory-only blob would make the Retry button a promise the app could not keep. If IndexedDB is unavailable (private browsing, blocked storage) everything still works — an unfinished recording just does not survive the tab.
 
+## Daily usage meter
+
+A thin bar under the record screen shows how much audio you have sent to Groq today against the free tier's 8 hours per day — the same metric Android Stow shows, worded the same way, so the two can be read interchangeably: `Today's usage: 12m (2% of 8h Groq free limit)`. The bar turns red past 80%. If you somehow exceed the limit the bar stays full but the text keeps counting honestly (`112%`).
+
+Two things it does not claim to be:
+
+- **It counts this device only.** The tally lives in this browser's `localStorage`, so an iPad and a phone using the same key each see their own number. Groq's console is the authoritative figure.
+- **It counts successful transcriptions only.** A call that failed and was retried is counted once, when it succeeded. Resuming a restored recording that was already transcribed does not count again, because it does not re-transcribe.
+
+The counter resets at local midnight. There is no timer doing that — the stored date is compared against today's on every read, so a stale total simply reads as zero.
+
 ## Storage
 
 Settings and history are `localStorage`; an unfinished recording's audio is IndexedDB (`stow` → `pending`), since `localStorage` cannot hold a Blob.
@@ -125,6 +136,7 @@ Settings and history are `localStorage`; an unfinished recording's audio is Inde
 | `stow_presets` | JSON array of `{id, name, prompt}` |
 | `stow_selected_preset` | Last-used preset id |
 | `stow_history` | JSON array of sessions, newest first |
+| `stow_usage` | `{date, sec}` — today's audio seconds sent to Groq |
 
 History is capped so it can never overflow the quota: 50 sessions maximum, 400 KB serialized maximum, and 20,000 characters per stored text. Whichever binds first wins, oldest dropped. If a write is rejected anyway, the list is halved until it fits.
 
@@ -137,7 +149,6 @@ Deliberately not ported from Android Stow:
 - **Background recording** — impossible in a web page. See above.
 - **Persistent notification with a Stop action** — same reason.
 - **Auto-copy on transcribe** — iOS only allows clipboard writes from a user gesture, so copying is a tap on the Copy button instead of automatic.
-- **Daily Groq usage meter** — the Android app tracked minutes against the free-tier 8h/day limit in local prefs. Check the Groq console instead. ([sluice](https://github.com/mds08011/sluice) has a working web implementation of this if it is wanted later.)
 - **Legacy `Stow_Log.txt` migration** — nothing to migrate on a fresh install.
 - **Editing the result text in place** and saving edits back to history — read-only view in v1.
 - **Re-polish a history entry with a different preset** — you can copy the raw transcript out, but there is no in-app re-run.
