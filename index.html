@@ -573,14 +573,6 @@ label.field > span.lbl {
   /** Cheapest authenticated endpoint — used only to verify a key in Settings. */
   const MODELS_URL = 'https://api.groq.com/openai/v1/models';
 
-  /**
-   * Whisper biasing prompt base, copied verbatim from RecordingService.kt. The
-   * user's jargon dictionary is appended as ", <jargon>" — a style hint, not an
-   * instruction. Whisper only honours roughly the last 224 tokens, so a very
-   * long dictionary pushes these seed terms out of scope.
-   */
-  const BASE_ASR_PROMPT = 'CAD, HVAC, structural load, thermodynamic, schematic';
-
   /** Optional placeholder letting a preset control where the jargon list lands. */
   const JARGON_PLACEHOLDER = '{{JARGON_LIST}}';
 
@@ -593,7 +585,9 @@ label.field > span.lbl {
 '\n' +
 'Your job is light cleanup only. Follow these rules strictly and in order:\n' +
 '\n' +
-'1. Remove filler words and vocalizations: um, uh, er, ah, like, you know, kind of, sort of, basically, actually (when used as filler), yeah, so, well (when used as filler), and similar. Remove them completely.\n' +
+'1. Remove filler words and vocalizations.\n' +
+'   Always remove: um, uh, er, ah, mm, hmm.\n' +
+'   Remove only when clearly functioning as filler: like, you know, kind of, sort of, basically, actually, yeah, so, well. Keep them when they carry meaning — in "so the valve was closed" the word "so" is causal, and in "kind of a hairline crack" the phrase hedges a description. Both stay.\n' +
 '\n' +
 '2. Fix spelling mistakes, grammar errors, and add correct capitalization and punctuation.\n' +
 '\n' +
@@ -603,7 +597,8 @@ label.field > span.lbl {
 '5. Do NOT expand short notes into longer text or turn them into essays.\n' +
 '6. Do NOT rewrite for style or make the language more formal/professional beyond the light fixes above.\n' +
 '7. Preserve technical terms, project names, company names, and proper nouns exactly. Use the provided Jargon List when available.\n' +
-'8. Keep the cleaned output similar in length to the original transcription.\n' +
+'8. Do NOT convert, round, reformat, or normalise numbers, units, measurements, dates, times, stationing, or identifiers — keep them exactly as spoken. "eight inch" stays "eight inch", not "8-inch"; "point two five MGD" stays as spoken. Preserve the speaker’s line breaks and list structure.\n' +
+'9. Keep the cleaned output similar in length to the original transcription.\n' +
 '\n' +
 'Output ONLY the cleaned plain text. No explanations, no quotes, no additional commentary.';
 
@@ -899,10 +894,16 @@ label.field > span.lbl {
       '\n\nJargon List (preserve these exactly):\n' + list;
   }
 
-  /** Whisper `prompt` param: base seed terms plus the user's dictionary. */
+  /**
+   * Whisper `prompt` param: the user's dictionary only.
+   *
+   * Android Stow used to prepend a fixed seed ("CAD, HVAC, structural load,
+   * thermodynamic, schematic") and dropped it in v2.5 — the terms are wrong-domain
+   * for this user's work and Whisper only honours roughly the last 224 tokens, so
+   * the seed was crowding out the vocabulary that actually gets misheard.
+   */
   function buildAsrPrompt(jargon) {
-    const list = (jargon || '').trim();
-    return list ? BASE_ASR_PROMPT + ', ' + list : BASE_ASR_PROMPT;
+    return (jargon || '').trim();
   }
 
   // ══ History ═════════════════════════════════════════════════
@@ -1183,14 +1184,20 @@ label.field > span.lbl {
   };
 
   /**
-   * Whisper transcription. Same request shape as Android Stow: file + model +
-   * biasing prompt, nothing else, so both apps get identical decoding defaults.
+   * Whisper transcription. Same request shape as Android Stow — file, model,
+   * language, temperature, and the biasing prompt only when there is one — so
+   * both apps get identical decoding behaviour for the same audio.
    */
   async function transcribe(blob, mime, apiKey, jargon) {
     const form = new FormData();
     form.append('file', blob, 'audio.' + extOf(mime || blob.type));
     form.append('model', MODELS.transcribe);
-    form.append('prompt', buildAsrPrompt(jargon));
+    // Pinning these stops Whisper's temperature-fallback ladder from kicking in on
+    // poor audio, which is what produces fluent, confident nonsense.
+    form.append('language', 'en');
+    form.append('temperature', '0');
+    const asrPrompt = buildAsrPrompt(jargon);
+    if (asrPrompt) form.append('prompt', asrPrompt);
 
     const res = await fetch(TRANSCRIBE_URL, {
       method: 'POST',

@@ -63,7 +63,9 @@ For dictation-length captures — seconds to a few minutes — this is a non-iss
 
 ## Settings
 
-**Jargon dictionary** — comma-separated terms. Used twice: appended to Whisper's biasing prompt so the transcription hears them, and given to the polish model so it preserves them. This is the same mechanism as the Android app.
+**Jargon dictionary** — comma-separated terms. Used twice: sent as Whisper's biasing prompt so the transcription hears them, and given to the polish model so it preserves them. This is the same mechanism as the Android app.
+
+Your terms are the *only* thing sent as the biasing prompt. Android used to prepend a fixed seed (`CAD, HVAC, structural load, thermodynamic, schematic`) and dropped it in v2.5 as wrong-domain noise that crowded out the vocabulary actually being misheard; this app followed suit.
 
 Whisper only honours roughly the last 224 tokens of its prompt, so keep the list to the terms that actually get misheard. A dictionary of hundreds of entries will push the useful ones out of scope.
 
@@ -78,11 +80,20 @@ The jargon dictionary is appended to any preset automatically. If you want contr
 
 The preset selector sits next to the record button and remembers your last choice.
 
-### Keeping the built-in prompts in sync
+### Keeping the shared parts in sync
 
-The two built-in prompts are duplicated here and in Android Stow's `PolishPresets.kt`. Since both apps use the same preset names, a divergence would be silent — nothing breaks, the same preset just quietly stops producing the same output on the phone and the iPad.
+The built-in prompts are duplicated here and in Android Stow's `PolishPresets.kt`, along with the preset ids and names, the jargon placeholder, and both model ids. Since both apps use the same preset names, a divergence is silent — nothing breaks, the same preset just quietly stops producing the same output on the phone and the iPad.
 
-`.github/check-prompt-drift.js` guards against that. It fetches `PolishPresets.kt` from `mds08011/stow` and fails if either prompt no longer matches byte for byte, naming the first differing line. CI runs it on every push that touches `index.html`, on pull requests, and weekly — the schedule matters most, because drift is far more likely to be introduced on the Android side, where nothing in this repo would otherwise run.
+`.github/check-prompt-drift.js` guards against that. It resolves the Kotlin sources from `mds08011/stow` **by filename** and fails if anything shared no longer matches byte for byte, naming the first differing line.
+
+It runs from **both** repos:
+
+| Repo | Workflow | When |
+|---|---|---|
+| this one | `prompt-drift.yml` | push touching `index.html`, PRs, Mondays 06:17 UTC |
+| `mds08011/stow` | `parity-check.yml` | push touching the shared Kotlin files, PRs, Mondays 06:43 UTC |
+
+The Android workflow clones this repo and runs *this* script, so there is only ever one implementation of the check. That reverse direction matters: drift is far more likely to originate on the Android side, where nothing here would otherwise run.
 
 Run it yourself against the live source, or against a local checkout:
 
@@ -94,7 +105,9 @@ node .github/check-prompt-drift.js
 node .github/check-prompt-drift.js ../stow
 ```
 
-If you deliberately revise a prompt, change it in both repos.
+If you deliberately revise something shared, change it in both repos in the same sitting and record the decision in [stow/docs/parity.md](https://github.com/mds08011/stow/blob/main/docs/parity.md) — that page is the source of truth for what the two apps share and where they intentionally differ.
+
+> **Why by filename, not path.** On 2026-07-30 the Android package was renamed and this check, which hardcoded `com/example/stow/…`, started reporting a missing file instead of the prompt drift that shipped alongside it. Three separate divergences had accumulated before anyone noticed.
 
 ## When a Groq call fails
 
