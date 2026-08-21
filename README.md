@@ -10,7 +10,7 @@ Built for Safari on iPadOS and iOS, added to the home screen. It works in any mo
 
 1. **Record** — one big button, elapsed timer, screen wake lock held for the duration.
 2. **Transcribe** — `whisper-large-v3-turbo` on Groq, biased with your jargon dictionary so it hears project names and trade terms correctly.
-3. **Polish** — `llama-3.1-8b-instant` on Groq, driven by the polish preset selected next to the record button.
+3. **Polish** — `openai/gpt-oss-20b` on Groq by default and changeable in Settings, driven by the polish preset selected next to the record button.
 4. **Read it** — polished Markdown in a readable view, with Copy, Share, and a toggle to see the raw transcript Whisper actually produced.
 5. **Keep it** — the last 50 sessions live in `localStorage` with per-item delete and clear-all.
 
@@ -80,9 +80,17 @@ The jargon dictionary is appended to any preset automatically. If you want contr
 
 The preset selector sits next to the record button and remembers your last choice.
 
+**Polish model** — the Groq chat model the polish step calls, as a plain text field prefilled with the shipped default (`openai/gpt-oss-20b`). Clearing it restores that default, so there is always a way back to a known-good value.
+
+It is a field rather than a dropdown on purpose. Groq retires chat models on a published schedule: this app called `llama-3.1-8b-instant` until Groq deprecated its Llama chat models on 2026-06-17 and stopped serving them in August 2026, at which point every polish request failed with `model_decommissioned` and the only fix was a redeploy. A curated dropdown would go stale on exactly the same schedule as a hardcoded constant, so the id is just a string you can change. When it happens again, paste a current id from [console.groq.com/docs/models](https://console.groq.com/docs/models).
+
+Transcription does not use this model. Whisper was never part of the chat deprecations and has no such field.
+
+> The **default** is half of the cross-app contract with Android Stow and is checked mechanically — see below. Overriding it in your own browser is a deliberate, per-device divergence and nothing checks that, by design.
+
 ### Keeping the shared parts in sync
 
-The built-in prompts are duplicated here and in Android Stow's `PolishPresets.kt`, along with the preset ids and names, the jargon placeholder, and both model ids. Since both apps use the same preset names, a divergence is silent — nothing breaks, the same preset just quietly stops producing the same output on the phone and the iPad.
+The built-in prompts are duplicated here and in Android Stow's `PolishPresets.kt`, along with the preset ids and names, the jargon placeholder, and both model ids — the polish one as its shipped default, since both apps now let the user override it. Since both apps use the same preset names, a divergence is silent — nothing breaks, the same preset just quietly stops producing the same output on the phone and the iPad.
 
 `.github/check-prompt-drift.js` guards against that. It resolves the Kotlin sources from `mds08011/stow` **by filename** and fails if anything shared no longer matches byte for byte, naming the first differing line.
 
@@ -120,6 +128,10 @@ Your recording is never thrown away by a failure. The error banner gives you the
 Starting a new recording while an unsaved one is parked will ask before discarding it.
 
 Errors are translated rather than dumped: a 401 says the key was rejected, a 429 says rate limit, a 413 says the file exceeds Groq's 25 MB limit, and a dropped connection says you are offline.
+
+**A retired polish model says so.** Groq answers a decommissioned model with a `400` and a `model_decommissioned` error, which would otherwise read as a generic "Polish failed (400)" and send you looking in the wrong place. Instead the banner names the model that was actually sent, quotes Groq's own message, and points at **Settings → Polish model**. A mistyped id (`404` / `model_not_found`) gets the same treatment.
+
+**A failed polish never yields half a note.** The polish step returns either a complete polished transcript or an error — never degraded text. Beyond the obvious failures, three cases that look like success are rejected: an error envelope arriving on a `200`, an empty or missing message body, and a generation that stopped on the token cap (`finish_reason: "length"`), which comes back as ordinary-looking text that happens to end mid-sentence. In every case the raw transcript is shown behind the banner and can be kept with one tap.
 
 **Rate limits tell you how long.** Groq reports the wait two ways and neither is reliable alone — a `retry-after` header, and prose in the error body (`try again in 2m59.56s`). Stow Web takes whichever is larger and counts the Retry button down, keeping it disabled until a retry could actually succeed, because retrying early just burns another slot. It does not fire on its own: a session holding unsaved audio should not act without being asked.
 

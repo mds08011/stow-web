@@ -484,9 +484,24 @@ label.field > span.lbl {
     </div>
 
     <div class="card">
+      <h2>Polish model</h2>
+      <input type="text" id="input-polish-model" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <p class="hint">
+        The Groq chat model used for polish. Groq retires these on its own schedule —
+        when it does, paste a current id from
+        <a href="https://console.groq.com/docs/models" target="_blank" rel="noopener">console.groq.com/docs/models</a>.
+        Empty restores the default, <code id="polish-model-default"></code>.
+        Transcription does not use this model and keeps working either way.
+      </p>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btn-polish-model-save">Save model</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>About</h2>
       <p class="hint" style="margin-top:0">
-        Whisper model <code>whisper-large-v3-turbo</code>, polish model <code>llama-3.1-8b-instant</code>.
+        Whisper model <code>whisper-large-v3-turbo</code>, polish model <code id="about-polish-model"></code>.
         No analytics, no third-party requests, no service worker.
         Recording needs the screen on and this page in the foreground.
       </p>
@@ -564,10 +579,29 @@ label.field > span.lbl {
   // ══ Constants ═══════════════════════════════════════════════
   // Mirrors Android Stow exactly. Changing either model here means the web and
   // Android apps stop producing comparable output for the same preset.
+  //
+  // `polish` is the shipped *default* only — Settings → Polish model overrides it
+  // per browser, and the parity contract is over this default (see getPolishModel
+  // and stow/docs/parity.md). It was 'llama-3.1-8b-instant' until Groq deprecated
+  // its Llama chat models on 2026-06-17 and stopped serving them that August, at
+  // which point every polish request began failing with `model_decommissioned`.
+  // That is also why the model is now editable: the next retirement should be a
+  // field to change, not a redeploy. Whisper was never part of the deprecations.
   const MODELS = {
     transcribe: 'whisper-large-v3-turbo',
-    polish: 'llama-3.1-8b-instant'
+    polish: 'openai/gpt-oss-20b'
   };
+
+  /** A Groq model id is far shorter; this only stops a paste of unrelated text. */
+  const POLISH_MODEL_MAX_CHARS = 100;
+
+  /**
+   * Floor for `max_tokens`, mirroring Android. A reasoning model emits thinking
+   * tokens first and they come out of the same budget, so a short note could
+   * spend a small cap before writing a word — arriving as truncated or empty
+   * output rather than as an error.
+   */
+  const MIN_MAX_TOKENS = 1024;
   const TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
   /** Cheapest authenticated endpoint — used only to verify a key in Settings. */
@@ -638,6 +672,7 @@ label.field > span.lbl {
     jargon: 'stow_jargon',
     presets: 'stow_presets',
     selected: 'stow_selected_preset',
+    polishModel: 'stow_polish_model',
     history: 'stow_history',
     usage: 'stow_usage'
   };
@@ -705,6 +740,24 @@ label.field > span.lbl {
 
   function getApiKey() { return lsGet(KEYS.apiKey) || ''; }
   function getJargon() { return lsGet(KEYS.jargon) || ''; }
+
+  /**
+   * The chat model polish calls. An empty or unset field means the shipped
+   * default, so clearing the box is how you get back to a known-good value.
+   */
+  function getPolishModel() {
+    return (lsGet(KEYS.polishModel) || '').trim() || MODELS.polish;
+  }
+
+  /**
+   * Reasoning controls are gpt-oss-specific. Other Groq chat models reject them
+   * outright, and the model is user-editable, so they are sent only when the
+   * selected id is one that understands them. Matches
+   * TranscriptionPolisher.isReasoningModel.
+   */
+  function isReasoningModel(model) {
+    return /^openai\/gpt-oss/i.test((model || '').trim());
+  }
 
   // ══ Daily usage meter ═══════════════════════════════════════
   /**
@@ -1087,12 +1140,14 @@ label.field > span.lbl {
 
   // ══ Groq API ════════════════════════════════════════════════
   class ApiError extends Error {
-    constructor(message, status, retryAfter) {
+    constructor(message, status, retryAfter, model) {
       super(message);
       this.name = 'ApiError';
       this.status = status || 0;
       /** Seconds to wait before retrying is worth attempting, 0 if unknown. */
       this.retryAfter = retryAfter || 0;
+      /** Chat model that was sent, when the call named one. Polish only. */
+      this.model = model || '';
     }
   }
 
@@ -1124,15 +1179,28 @@ label.field > span.lbl {
   }
 
   /** Reads the body once and turns a non-2xx response into an ApiError. */
-  async function toApiError(res, what) {
+  async function toApiError(res, what, model) {
     let body = '';
     try { body = await res.text(); } catch (_) {}
     const retryable = res.status === 429 || res.status >= 500;
     return new ApiError(
       body || res.statusText || (what + ' failed'),
       res.status,
-      retryable ? parseRetryAfter(res, body, res.status) : 0
+      retryable ? parseRetryAfter(res, body, res.status) : 0,
+      model
     );
+  }
+
+  /**
+   * Did Groq refuse the model itself, rather than the key, the rate limit, or the
+   * request? Groq retires chat models on a published schedule and answers with a
+   * `model_decommissioned` invalid_request_error; a mistyped id gives
+   * `model_not_found` or a 404. All of them point at the same fix — a setting the
+   * user owns — so they get one message instead of a status code.
+   */
+  function isRejectedModel(status, text) {
+    if (status === 404) return true;
+    return /model_decommissioned|model_not_found|decommissioned|does not exist/i.test(text || '');
   }
 
   /** Turns a Groq failure into something worth reading on a phone. */
@@ -1148,6 +1216,16 @@ label.field > span.lbl {
     if (detail.length > 220) detail = detail.slice(0, 220) + '…';
     // Our own synthetic messages are already full sentences; do not re-wrap them.
     const selfDescribed = e instanceof ApiError && !status && /[.!?]$/.test(detail);
+
+    // Checked before the status branches: a retired model can arrive as a 400,
+    // and "Polish failed (400)" would send the user looking in the wrong place.
+    // Only polish carries a model, so transcription never lands here.
+    const model = (e && e.model) || '';
+    if (model && isRejectedModel(status, raw)) {
+      return 'Groq will not serve the polish model "' + model + '". ' + detail +
+        ' Pick a current model in Settings → Polish model — console.groq.com/docs/models ' +
+        'lists what is live. Your transcript is unaffected.';
+    }
 
     if (status === 401 || status === 403) {
       return 'Groq rejected the API key. Check it in Settings.';
@@ -1230,29 +1308,68 @@ label.field > span.lbl {
     return { ok: false, message: 'Groq answered ' + res.status + '. The key may still be fine — try again.' };
   }
 
-  /** Polish pass. Two messages, temperature 0.2, no max_tokens — as on Android. */
-  async function polish(rawText, apiKey, systemPrompt) {
+  /**
+   * Polish pass. Two messages, temperature 0.2 — as on Android.
+   *
+   * Every exit that is not a complete polished string throws, because the caller
+   * falls back to the raw transcript on a throw and shows it. Degraded output is
+   * the one thing this must never return quietly: a truncated generation reads
+   * as ordinary text that happens to stop mid-sentence, and an error envelope on
+   * a 200 would otherwise fall through to "no content".
+   *
+   * @param model the chat model id — Settings → Polish model, defaulting to
+   *   MODELS.polish. Carried onto any ApiError so the failure can name it.
+   */
+  async function polish(rawText, apiKey, systemPrompt, model) {
+    model = (model || '').trim();
+    if (!model) throw new ApiError('No polish model set. Check Settings → Polish model.', 0);
+
+    const body = {
+      model: model,
+      temperature: 0.2,
+      // Roughly two tokens of headroom per token of input — enough for a preset
+      // that restructures, while still capping a runaway generation.
+      max_tokens: Math.max(MIN_MAX_TOKENS, Math.floor(rawText.length / 3) * 2),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: rawText }
+      ]
+    };
+    if (isReasoningModel(model)) {
+      // Groq returns reasoning in a separate field so it never reaches the note,
+      // but it is still generated and still spends the budget — so ask for as
+      // little as possible and do not ship it back over a phone connection.
+      body.reasoning_effort = 'low';
+      body.include_reasoning = false;
+    }
+
     const res = await fetch(CHAT_URL, {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + apiKey,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model: MODELS.polish,
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: rawText }
-        ]
-      })
+      body: JSON.stringify(body)
     });
-    if (!res.ok) throw await toApiError(res, 'Polish');
+    if (!res.ok) throw await toApiError(res, 'Polish', model);
+
     const data = await res.json();
+    // A 200 can still carry an error envelope; treat it as the failure it is
+    // rather than letting it fall through to the empty-content check.
+    if (data && data.error) {
+      throw new ApiError(JSON.stringify(data), res.status || 0, 0, model);
+    }
     const choice = data && data.choices && data.choices[0];
     const content = choice && choice.message && choice.message.content;
     const out = typeof content === 'string' ? content.trim() : '';
-    if (!out) throw new ApiError('Polish returned no content.', 0);
+    if (!out) throw new ApiError('Polish returned no content.', 0, 0, model);
+    // Stopping on the token cap means the text is cut off mid-sentence. It looks
+    // like a normal result, so nothing downstream would catch it.
+    if (choice.finish_reason === 'length') {
+      throw new ApiError(
+        'Polish was cut off at the token limit, so it is incomplete.', 0, 0, model
+      );
+    }
     return out;
   }
 
@@ -1479,10 +1596,15 @@ label.field > span.lbl {
     el('status').textContent = 'Polishing with "' + session.preset.name + '"…';
     try {
       session.polishedText = await polish(
-        session.rawText, apiKey, buildSystemPrompt(session.preset, jargon)
+        session.rawText, apiKey, buildSystemPrompt(session.preset, jargon), getPolishModel()
       );
     } catch (e) {
-      failStage(humanError(e, 'Polish'), 'Retry polish', true, e);
+      // rawAvailable, so failStage shows the raw transcript behind the banner —
+      // a failed polish costs the polish and nothing else.
+      failStage(
+        humanError(e, 'Polish') + ' Showing the raw transcript.',
+        'Retry polish', true, e
+      );
       return;
     }
 
@@ -1770,6 +1892,12 @@ label.field > span.lbl {
     el('input-key').value = '';
     el('btn-key-cancel').hidden = !key;
     el('input-jargon').value = getJargon();
+    // Prefilled with what is actually in force, so the field always shows the
+    // model a polish request would use rather than an empty box meaning "default".
+    el('input-polish-model').value = getPolishModel();
+    el('input-polish-model').placeholder = MODELS.polish;
+    el('polish-model-default').textContent = MODELS.polish;
+    el('about-polish-model').textContent = getPolishModel();
     setKeyMsg('');
     renderPresetList();
   }
@@ -1997,6 +2125,20 @@ label.field > span.lbl {
   el('btn-jargon-save').addEventListener('click', () => {
     lsSet(KEYS.jargon, el('input-jargon').value.trim());
     toast('Dictionary saved');
+  });
+
+  el('btn-polish-model-save').addEventListener('click', () => {
+    const typed = el('input-polish-model').value.trim().slice(0, POLISH_MODEL_MAX_CHARS);
+    // Storing the default as an override would silently pin it, so an id equal to
+    // the default is stored as "no override" and follows a future default forward.
+    const overriding = typed && typed !== MODELS.polish;
+    if (overriding) lsSet(KEYS.polishModel, typed);
+    else lsRemove(KEYS.polishModel);
+    // Repaint only what this changed. renderSettings() would also reset the key
+    // entry, discarding a key the user was part-way through typing.
+    el('input-polish-model').value = getPolishModel();
+    el('about-polish-model').textContent = getPolishModel();
+    toast(overriding ? 'Polish model saved' : 'Using the default polish model');
   });
 
   el('btn-preset-new').addEventListener('click', () => openPresetEditor(null));
