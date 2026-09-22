@@ -48,6 +48,7 @@ const CONSTANTS = [
   { label: 'Clean prose name', js: 'DEFAULT_CLEAN_PROSE_NAME', kt: 'DEFAULT_CLEAN_PROSE_NAME', file: 'PolishPresets.kt' },
   { label: 'Task capture name', js: 'DEFAULT_TASK_CAPTURE_NAME', kt: 'DEFAULT_TASK_CAPTURE_NAME', file: 'PolishPresets.kt' },
   { label: 'Jargon placeholder', js: 'JARGON_PLACEHOLDER', kt: 'JARGON_PLACEHOLDER', file: 'PolishPresets.kt' },
+  { label: 'Today placeholder', js: 'TODAY_PLACEHOLDER', kt: 'TODAY_PLACEHOLDER', file: 'PolishPresets.kt' },
   { label: 'Transcribe model', js: 'MODELS.transcribe', kt: 'MODEL_TURBO', file: 'AudioTranscriber.kt' },
   { label: 'Polish model', js: 'MODELS.polish', kt: 'MODEL', file: 'TranscriptionPolisher.kt' }
 ];

@@ -610,6 +610,13 @@ label.field > span.lbl {
   /** Optional placeholder letting a preset control where the jargon list lands. */
   const JARGON_PLACEHOLDER = '{{JARGON_LIST}}';
 
+  /**
+   * Optional placeholder for today's date, ISO YYYY-MM-DD, in the browser's own
+   * timezone. A model has no clock; without this a preset can only echo a spoken
+   * timeframe back. Mirrors PolishPresets.TODAY_PLACEHOLDER.
+   */
+  const TODAY_PLACEHOLDER = '{{TODAY}}';
+
   const ID_CLEAN_PROSE = 'clean_prose';
   const ID_TASK_CAPTURE = 'task_capture';
 
@@ -663,8 +670,14 @@ label.field > span.lbl {
 '- One task per line, even if the speaker ran several together.\n' +
 '- Keep the speaker\'s wording. Fix obvious transcription errors from\n' +
 '  context. Never invent, merge, or expand items.\n' +
-'- If a due date or timeframe is spoken, append it in parentheses at the\n' +
-'  end of the task line, e.g. "- [ ] Order check valves (by Friday)".\n' +
+'- If a due date or timeframe is spoken, resolve it against today\'s date,\n' +
+'  {{TODAY}}, and append it as "📅 YYYY-MM-DD" at the end of the task\n' +
+'  line, e.g. "- [ ] Order check valves 📅 2026-09-25". "Tomorrow",\n' +
+'  "Friday" and "end of next week" all become one date; a weekday name\n' +
+'  means the NEXT such day, never one already past. Leave the date off\n' +
+'  entirely when none was spoken -- never guess one -- and keep a vague\n' +
+'  timeframe in the text instead when it will not resolve to a day,\n' +
+'  e.g. "- [ ] Chase the submittal (sometime after the pour)".\n' +
 '- Preserve names, quantities, and job numbers exactly as spoken.';
 
   const KEYS = {
@@ -937,14 +950,31 @@ label.field > span.lbl {
    * placeholder wins; otherwise a jargon block is appended; nothing is appended
    * when the dictionary is empty.
    */
-  function buildSystemPrompt(preset, jargon) {
+  function buildSystemPrompt(preset, jargon, today) {
     const list = (jargon || '').trim();
+    let withJargon;
     if (preset.prompt.indexOf(JARGON_PLACEHOLDER) !== -1) {
-      return preset.prompt.split(JARGON_PLACEHOLDER).join(list || '(none)');
+      withJargon = preset.prompt.split(JARGON_PLACEHOLDER).join(list || '(none)');
+    } else if (!list) {
+      withJargon = preset.prompt;
+    } else {
+      withJargon = preset.prompt.replace(/\s+$/, '') +
+        '\n\nJargon List (preserve these exactly):\n' + list;
     }
-    if (!list) return preset.prompt;
-    return preset.prompt.replace(/\s+$/, '') +
-      '\n\nJargon List (preserve these exactly):\n' + list;
+    // Jargon first, then the date — the same order as Android, so the two cannot
+    // disagree about a preset that uses both placeholders.
+    return withJargon.split(TODAY_PLACEHOLDER).join(localIsoDate(today || new Date()));
+  }
+
+  /**
+   * Today as YYYY-MM-DD in the *browser's* timezone.
+   *
+   * Deliberately not toISOString(), which is UTC: a capture dictated at 5pm
+   * Pacific would be stamped tomorrow and land the task a day late.
+   */
+  function localIsoDate(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   }
 
   /**
