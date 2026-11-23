@@ -596,12 +596,33 @@ label.field > span.lbl {
   const POLISH_MODEL_MAX_CHARS = 100;
 
   /**
-   * Floor for `max_tokens`, mirroring Android. A reasoning model emits thinking
-   * tokens first and they come out of the same budget, so a short note could
-   * spend a small cap before writing a word — arriving as truncated or empty
-   * output rather than as an error.
+   * Floor under the *output* half of the `max_tokens` budget, for a note too
+   * short to estimate from. Mirrors TranscriptionPolisher.MIN_MAX_TOKENS.
    */
   const MIN_MAX_TOKENS = 1024;
+
+  /**
+   * Flat allowance added to a reasoning model's budget for the tokens it spends
+   * thinking before it writes. `max_tokens` is one allowance for everything the
+   * model emits, and gpt-oss writes its reasoning first, out of that same
+   * allowance. The floor above only binds below about 1,500 characters — a
+   * minute of speech — so without this a longer note ran out of budget during
+   * the thinking and came back cut off, or with no text at all.
+   *
+   * Flat, not proportional: the thinking is reading the preset's rules once,
+   * which does not grow with the transcript. It cannot be switched off either:
+   * `reasoning_effort` is already "low" and gpt-oss does not accept "none".
+   *
+   * Android fixed this in v2.8.1 (2026-09-21). Mirrors
+   * TranscriptionPolisher.REASONING_HEADROOM_TOKENS and maxTokensFor.
+   */
+  const REASONING_HEADROOM_TOKENS = 2048;
+
+  /** The completion budget for one polish request. See REASONING_HEADROOM_TOKENS. */
+  function maxTokensFor(rawTextLength, model) {
+    const output = Math.max(MIN_MAX_TOKENS, Math.floor(rawTextLength / 3) * 2);
+    return isReasoningModel(model) ? output + REASONING_HEADROOM_TOKENS : output;
+  }
   const TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
   const CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
   /** Cheapest authenticated endpoint — used only to verify a key in Settings. */
@@ -1358,8 +1379,9 @@ label.field > span.lbl {
       model: model,
       temperature: 0.2,
       // Roughly two tokens of headroom per token of input — enough for a preset
-      // that restructures, while still capping a runaway generation.
-      max_tokens: Math.max(MIN_MAX_TOKENS, Math.floor(rawText.length / 3) * 2),
+      // that restructures, while still capping a runaway generation — plus room
+      // for a reasoning model to think.
+      max_tokens: maxTokensFor(rawText.length, model),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: rawText }
@@ -1392,14 +1414,22 @@ label.field > span.lbl {
     const choice = data && data.choices && data.choices[0];
     const content = choice && choice.message && choice.message.content;
     const out = typeof content === 'string' ? content.trim() : '';
-    if (!out) throw new ApiError('Polish returned no content.', 0, 0, model);
-    // Stopping on the token cap means the text is cut off mid-sentence. It looks
-    // like a normal result, so nothing downstream would catch it.
-    if (choice.finish_reason === 'length') {
+    // The token cap is tested before emptiness, and the order matters. A
+    // reasoning model can spend the whole budget thinking and return
+    // finish_reason "length" with no content at all. Tested the other way
+    // round, that reads as "no content" — a misbehaving model — when it is a
+    // budget too small to reach an answer. Same order as Android since v2.8.1.
+    if (choice && choice.finish_reason === 'length') {
       throw new ApiError(
-        'Polish was cut off at the token limit, so it is incomplete.', 0, 0, model
+        out
+          // Cut off mid-sentence. It looks like a normal result, so nothing
+          // downstream would catch it.
+          ? 'Polish was cut off at the token limit, so it is incomplete.'
+          : 'Polish used its whole token budget thinking and never wrote an answer.',
+        0, 0, model
       );
     }
+    if (!out) throw new ApiError('Polish returned no content.', 0, 0, model);
     return out;
   }
 
